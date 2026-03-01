@@ -1,0 +1,10 @@
+# Cortex XDR credentials – never commit
+wodle/.secrets
+
+# Wodle runtime state – generated at runtime, not part of the repo
+wodle/state.json
+
+# Python cache
+**/__pycache__/
+**/*.pyc
+**/*.pyo

@@ -1,0 +1,185 @@
+{
+  "properties": {
+    "data": {
+      "type": "object",
+      "properties": {
+        "xdr_action": {
+          "type": "keyword"
+        },
+        "xdr_agent_hostname": {
+          "type": "keyword"
+        },
+        "xdr_aggregated_score": {
+          "type": "integer"
+        },
+        "xdr_alert_categories": {
+          "type": "keyword"
+        },
+        "xdr_alert_count": {
+          "type": "integer"
+        },
+        "xdr_alert_id": {
+          "type": "keyword"
+        },
+        "xdr_alert_name": {
+          "type": "keyword"
+        },
+        "xdr_alert_source": {
+          "type": "keyword"
+        },
+        "xdr_alerts_grouping_status": {
+          "type": "keyword"
+        },
+        "xdr_assigned_user_mail": {
+          "type": "keyword"
+        },
+        "xdr_assigned_user_pretty_name": {
+          "type": "keyword"
+        },
+        "xdr_category": {
+          "type": "keyword"
+        },
+        "xdr_creation_time": {
+          "format": "epoch_millis",
+          "type": "date"
+        },
+        "xdr_critical_severity_alert_count": {
+          "type": "integer"
+        },
+        "xdr_description": {
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "ignore_above": 1024
+            }
+          },
+          "type": "text"
+        },
+        "xdr_detection_time": {
+          "format": "epoch_millis",
+          "type": "date"
+        },
+        "xdr_high_severity_alert_count": {
+          "type": "integer"
+        },
+        "xdr_host_count": {
+          "type": "integer"
+        },
+        "xdr_hosts": {
+          "type": "keyword"
+        },
+        "xdr_incident_domain": {
+          "type": "keyword"
+        },
+        "xdr_incident_id": {
+          "type": "keyword"
+        },
+        "xdr_incident_name": {
+          "type": "keyword"
+        },
+        "xdr_incident_sources": {
+          "type": "keyword"
+        },
+        "xdr_low_severity_alert_count": {
+          "type": "integer"
+        },
+        "xdr_manual_score": {
+          "type": "integer"
+        },
+        "xdr_med_severity_alert_count": {
+          "type": "integer"
+        },
+        "xdr_mitre_tactics_ids_and_names": {
+          "type": "keyword"
+        },
+        "xdr_mitre_techniques_ids_and_names": {
+          "type": "keyword"
+        },
+        "xdr_modification_time": {
+          "format": "epoch_millis",
+          "type": "date"
+        },
+        "xdr_original_tags": {
+          "type": "keyword"
+        },
+        "xdr_predicted_score": {
+          "type": "integer"
+        },
+        "xdr_resolve_comment": {
+          "type": "keyword"
+        },
+        "xdr_resolved_timestamp": {
+          "format": "epoch_millis",
+          "type": "date"
+        },
+        "xdr_rule_based_score": {
+          "type": "integer"
+        },
+        "xdr_severity": {
+          "type": "keyword"
+        },
+        "xdr_starred": {
+          "type": "boolean"
+        },
+        "xdr_starred_manually": {
+          "type": "boolean"
+        },
+        "xdr_status": {
+          "type": "keyword"
+        },
+        "xdr_tags": {
+          "type": "keyword"
+        },
+        "xdr_user_count": {
+          "type": "integer"
+        },
+        "xdr_users": {
+          "type": "keyword"
+        },
+        "xdr_wildfire_hits": {
+          "type": "integer"
+        },
+        "xdr_xdr_url": {
+          "type": "keyword"
+        }
+      }
+    },
+    "rule": {
+      "type": "object",
+      "properties": {
+        "mitre": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "fields": {
+                "keyword": {
+                  "type": "keyword",
+                  "ignore_above": 256
+                }
+              },
+              "type": "text"
+            },
+            "tactic": {
+              "fields": {
+                "keyword": {
+                  "type": "keyword",
+                  "ignore_above": 256
+                }
+              },
+              "type": "text"
+            },
+            "technique": {
+              "fields": {
+                "keyword": {
+                  "type": "keyword",
+                  "ignore_above": 256
+                }
+              },
+              "type": "text"
+            }
+          }
+        }
+      }
+    }
+  }
+}

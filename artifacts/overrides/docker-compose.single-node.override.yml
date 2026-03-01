@@ -1,0 +1,99 @@
+# =============================================================================
+# docker-compose.single-node.override.yml
+# Cortex XDR Integration – Single-Node Wazuh Docker
+# =============================================================================
+#
+# DIRECTORY LAYOUT
+# ─────────────────────────────────────────────────────────────────────────────
+# The volume paths below (../wodle, ../rules) assume wazuh-cortex-xdr sits
+# ALONGSIDE wazuh-docker, not inside it:
+#
+#   your-workspace/
+#   ├── wazuh-docker/
+#   │   └── single-node/          ← run docker compose from here
+#   └── wazuh-cortex-xdr/
+#       ├── wodle/
+#       ├── rules/
+#       └── artifacts/overrides/  ← this file lives here
+#
+# If wazuh-cortex-xdr is cloned INSIDE wazuh-docker, adjust every volume
+# source path: ../../wodle → ../wazuh-cortex-xdr/wodle  (and so on).
+#
+# USAGE
+# ─────────────────────────────────────────────────────────────────────────────
+# Run from wazuh-docker/single-node/:
+#
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f ../../wazuh-cortex-xdr/artifacts/overrides/docker-compose.single-node.override.yml \
+#     up -d
+#
+# Or set COMPOSE_FILE once in your shell:
+#
+#   export COMPOSE_FILE="\
+#     docker-compose.yml:\
+#     ../../wazuh-cortex-xdr/artifacts/overrides/docker-compose.single-node.override.yml"
+#
+#   docker compose up -d
+#
+# FILE OWNERSHIP — HANDLED AUTOMATICALLY
+# ─────────────────────────────────────────────────────────────────────────────
+# The inline entrypoint detects the wazuh UID/GID at runtime and fixes
+# bind-mount ownership before Wazuh starts. No host-side chown required.
+# Works on Linux, macOS, and Windows Docker Desktop regardless of image
+# version (handles UID 999, 1000, or any other value).
+#
+# CREDENTIALS
+# ─────────────────────────────────────────────────────────────────────────────
+# Create your secrets file from the template before starting the stack:
+#
+#   Linux / macOS:   cp ../wodle/secrets.example ../wodle/.secrets
+#   Windows (PS):    Copy-Item ..\wodle\secrets.example ..\wodle\.secrets
+#
+# Edit the file and add your XDR_API_KEY and XDR_API_KEY_ID.
+# Permissions are set automatically by the entrypoint.
+#
+# OSSEC.CONF
+# ─────────────────────────────────────────────────────────────────────────────
+# Add the wodle stanza from artifacts/configs/ossec_cortex_xdr.conf to:
+#   wazuh-docker/single-node/config/wazuh_cluster/wazuh_manager.conf
+#
+# Wazuh 5.x note: update volume target paths below if using /var/wazuh-manager/
+# =============================================================================
+
+services:
+  wazuh.manager:
+
+    # Inline permission fix — detects wazuh UID/GID at runtime, corrects
+    # ownership on all bind-mounted paths, then execs the normal Wazuh
+    # entrypoint (/init) so the container starts identically to an
+    # unmodified deployment in every other respect.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        WZ_UID=$$(id -u wazuh)
+        WZ_GID=$$(id -g wazuh)
+        echo "[cortex-xdr] wazuh UID=$${WZ_UID} GID=$${WZ_GID} — fixing ownership..."
+        chown -R "root:$${WZ_GID}" /var/ossec/wodles/cortex-xdr
+        chmod 750 /var/ossec/wodles/cortex-xdr
+        [ -f /var/ossec/wodles/cortex-xdr/run.sh ]  && chmod 750 /var/ossec/wodles/cortex-xdr/run.sh
+        [ -f /var/ossec/wodles/cortex-xdr/.secrets ] && chmod 640 /var/ossec/wodles/cortex-xdr/.secrets
+        chown "root:$${WZ_GID}" /var/ossec/etc/rules/cortex_xdr_rules.xml
+        chmod 660 /var/ossec/etc/rules/cortex_xdr_rules.xml
+        chown "root:$${WZ_GID}" /var/ossec/etc/decoders/cortex_xdr_decoder.xml
+        chmod 660 /var/ossec/etc/decoders/cortex_xdr_decoder.xml
+        echo "[cortex-xdr] Permissions OK — handing off to Wazuh entrypoint..."
+        exec /init
+
+    environment:
+      - XDR_SECRETS_FILE=/var/ossec/wodles/cortex-xdr/.secrets
+
+    volumes:
+      # Wodle Python files, run.sh, .secrets, and state.json (writable for state)
+      - ../../wodle:/var/ossec/wodles/cortex-xdr
+
+      # Rules and decoder
+      - ../../rules/cortex_xdr_rules.xml:/var/ossec/etc/rules/cortex_xdr_rules.xml
+      - ../../rules/cortex_xdr_decoder.xml:/var/ossec/etc/decoders/cortex_xdr_decoder.xml
