@@ -23,7 +23,7 @@ The FQDN format is `yourorg.xdr.us.paloaltonetworks.com` — bare hostname only,
 
 ```bash
 cd /opt   # or any working directory
-git clone https://github.com/YOUR_ORG/wazuh-cortex-xdr.git
+git clone https://github.com/jnthans/wazuh-cortex-xdr.git
 cd wazuh-cortex-xdr
 ```
 

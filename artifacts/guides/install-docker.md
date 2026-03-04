@@ -37,7 +37,7 @@ your-workspace/
 ```bash
 cd your-workspace
 git clone https://github.com/wazuh/wazuh-docker.git
-git clone https://github.com/YOUR_ORG/wazuh-cortex-xdr.git
+git clone https://github.com/jnthans/wazuh-cortex-xdr.git
 ```
 
 If you clone `wazuh-cortex-xdr` **inside** `wazuh-docker`, adjust every volume source path in the override file: `../wodle` → `../wazuh-cortex-xdr/wodle`, and so on.

@@ -1,6 +1,6 @@
-# wazuh-cortex-xdr
+# Wazuh - Cortex XDR Integration (Wodle)
 
-Wazuh wodle that ingests **alerts** and **incidents** from Palo Alto Cortex XDR into Wazuh SIEM via the Cortex XDR REST API.
+Wazuh wodle that ingests **alerts** and **incidents** from Palo Alto Cortex XDR tenant into Wazuh SIEM via the Cortex XDR REST API.
 
 ---
 
@@ -76,7 +76,8 @@ wazuh-cortex-xdr/
 | `balanced` | All statuses | High + critical, DETECTED only | Off | **Recommended** for most environments |
 | `enriched` | All statuses | All severities, DETECTED + BLOCKED | On | Full archival fidelity, compliance, forensic requirements |
 
-Set the mode in `run.sh` via `XDR_MODE`, or pass `--mode` on the command line. The default is `balanced`. Individual flags override the mode for a single run. See [configuration reference](artifacts/guides/configuration.md) for details.
+Set the mode in `run.sh` via `XDR_MODE`, or pass `--mode` on the command line.
+The default is `balanced`. Individual flags override the mode for a single run. See [configuration reference](artifacts/guides/configuration.md) for details.
 
 ---
 

@@ -18,7 +18,7 @@ This guide covers deploying the Cortex XDR integration in a Kubernetes environme
 ## Step 1 — Clone the repository
 
 ```bash
-git clone https://github.com/YOUR_ORG/wazuh-cortex-xdr.git
+git clone https://github.com/jnthans/wazuh-cortex-xdr.git
 cd wazuh-cortex-xdr
 ```
 

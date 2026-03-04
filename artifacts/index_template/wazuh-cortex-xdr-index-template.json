@@ -53,6 +53,12 @@
             "xdr_mitre_techniques_ids_and_names": {
               "type": "keyword"
             },
+            "xdr_mitre_tactic_id_and_name": {
+              "type": "keyword"
+            },
+            "xdr_mitre_technique_id_and_name": {
+              "type": "keyword"
+            },
             "xdr_original_tags": {
               "type": "keyword"
             },
