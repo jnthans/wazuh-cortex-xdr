@@ -84,13 +84,13 @@ services:
       - XDR_SECRETS_FILE=/var/ossec/wodles/cortex-xdr/.secrets
 
     volumes:
-      - ../../wodle:/var/ossec/wodles/cortex-xdr
-      - ../../rules/cortex_xdr_rules.xml:/var/ossec/etc/rules/cortex_xdr_rules.xml
-      - ../../rules/cortex_xdr_decoder.xml:/var/ossec/etc/decoders/cortex_xdr_decoder.xml
+      - ../wazuh-cortex-xdr/wodle:/var/ossec/wodles/cortex-xdr
+      - ../wazuh-cortex-xdr/rules/cortex_xdr_rules.xml:/var/ossec/etc/rules/cortex_xdr_rules.xml
+      - ../wazuh-cortex-xdr/rules/cortex_xdr_decoder.xml:/var/ossec/etc/decoders/cortex_xdr_decoder.xml
 
   # ── Worker: rules + decoder only (no wodle, no credentials, no changes) ─────
   wazuh.worker:
 
     volumes:
-      - ../../rules/cortex_xdr_rules.xml:/var/ossec/etc/rules/cortex_xdr_rules.xml
-      - ../../rules/cortex_xdr_decoder.xml:/var/ossec/etc/decoders/cortex_xdr_decoder.xml
+      - ../wazuh-cortex-xdr/rules/cortex_xdr_rules.xml:/var/ossec/etc/rules/cortex_xdr_rules.xml
+      - ../wazuh-cortex-xdr/rules/cortex_xdr_decoder.xml:/var/ossec/etc/decoders/cortex_xdr_decoder.xml

@@ -2,8 +2,8 @@
 # =============================================================================
 # run.sh – Cortex XDR Wodle wrapper
 # =============================================================================
-# Sets non-sensitive runtime config and launches the Python entry point.
-# Credentials are NOT stored here — see CREDENTIAL OPTIONS below.
+# Sets runtime config and launches the Python entry point.
+# Sensitive values (FQDN, API key, key ID) are NOT stored here — see below.
 #
 # INSTALLATION
 # ─────────────────────────────────────────────────────────────────────────────
@@ -15,10 +15,7 @@
 # =============================================================================
 
 
-# ── Tenant config ─────────────────────────────────────────────────────────────
-# Bare hostname only — no https://, no api- prefix, no trailing slash.
-export XDR_FQDN="yourorg.xdr.us.paloaltonetworks.com"
-
+# ── Runtime config ────────────────────────────────────────────────────────────
 # "advanced" = SHA-256(key + nonce + timestamp_ms)  [recommended]
 # "standard" = SHA-256(key only)
 export XDR_SECURITY_LEVEL="advanced"
@@ -26,24 +23,25 @@ export XDR_SECURITY_LEVEL="advanced"
 # State file — records last-seen timestamps per data stream.
 export XDR_STATE_FILE="/var/ossec/wodles/cortex-xdr/state.json"
 
-# How far back to look on first run for ALERTS (before any state exists).
-# Incidents always do a full history sweep on first run regardless of this.
+# Lookback window for --all mode (hours). First run for both alerts and
+# incidents is capped at 30 days. Use --all --lookback 8760 for deeper backfills.
 export XDR_LOOKBACK_HOURS="24"
 
 # Default ingestion mode when --mode is not passed on the command line.
 # economy  — incidents only, minimal storage
-# balanced — incidents + high/critical DETECTED alerts  (recommended)
+# balanced — incidents + high/critical alerts             (recommended)
 # enriched — all alerts, all incidents, enrichment on
 export XDR_MODE="balanced"
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# CREDENTIAL OPTIONS — choose ONE of the three approaches below.
-# Priority chain: systemd credentials > secrets file > environment variables
+# SENSITIVE CONFIG — choose ONE of the two approaches below.
+# XDR_FQDN, XDR_API_KEY, and XDR_API_KEY_ID must not be stored in this file.
 # ═════════════════════════════════════════════════════════════════════════════
 
 # ── OPTION 1 (RECOMMENDED): Dedicated secrets file ───────────────────────────
-# Create /var/ossec/wodles/cortex-xdr/.secrets (mode 640, root:wazuh):
+# Create /var/ossec/wodles/cortex-xdr/.secrets (chmod 640, chown root:wazuh):
+#   XDR_FQDN=yourorg.xdr.us.paloaltonetworks.com
 #   XDR_API_KEY=your-api-key-secret-value
 #   XDR_API_KEY_ID=42
 #
@@ -51,13 +49,8 @@ export XDR_MODE="balanced"
 
 
 # ── OPTION 2 (MOST SECURE): systemd LoadCredentialEncrypted ─────────────────
-# See setup instructions in artifacts/guides/install-bare-metal.md (Step 3 — Option B).
-
-
-# ── OPTION 3 (LEAST PREFERRED): Inline environment variables ─────────────────
-# If used: chmod 600 this file, exclude from version control.
-# export XDR_API_KEY="your-api-key-secret"
-# export XDR_API_KEY_ID="42"
+# Inject via systemd unit LoadCredentialEncrypted=.
+# Credential names: xdr_fqdn, xdr_api_key, xdr_api_key_id
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -65,7 +58,7 @@ export XDR_MODE="balanced"
 PYTHON=$(command -v python3 2>/dev/null || command -v python 2>/dev/null)
 
 if [ -z "$PYTHON" ]; then
-    echo '{"integration":"cortex-xdr","type":"error","xdr_error":"python3 not found in PATH"}'
+    echo '{"integration":"cortex-xdr","xdr_type":"error","xdr_error":"python3 not found in PATH"}'
     exit 1
 fi
 

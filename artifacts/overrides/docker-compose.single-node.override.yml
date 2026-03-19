@@ -92,8 +92,8 @@ services:
 
     volumes:
       # Wodle Python files, run.sh, .secrets, and state.json (writable for state)
-      - ../../wodle:/var/ossec/wodles/cortex-xdr
+      - ../wazuh-cortex-xdr/wodle:/var/ossec/wodles/cortex-xdr
 
       # Rules and decoder
-      - ../../rules/cortex_xdr_rules.xml:/var/ossec/etc/rules/cortex_xdr_rules.xml
-      - ../../rules/cortex_xdr_decoder.xml:/var/ossec/etc/decoders/cortex_xdr_decoder.xml
+      - ../wazuh-cortex-xdr/rules/cortex_xdr_rules.xml:/var/ossec/etc/rules/cortex_xdr_rules.xml
+      - ../wazuh-cortex-xdr/rules/cortex_xdr_decoder.xml:/var/ossec/etc/decoders/cortex_xdr_decoder.xml

@@ -24,8 +24,8 @@ All fields emitted by the wodle are prefixed `data.xdr_*` in the Wazuh/OpenSearc
 | XDR severity | Alert rule level | Active incident rule level |
 |:---:|:---:|:---:|
 | low | 5 | 6 |
-| medium | 9 | 10 |
-| high | 12 | 13 |
+| medium | 10 | 10 |
+| high | 13 | 13 |
 | critical | 15 | 15 |
 
 Closed incident rules fire at level 3 (false positive) or 3–10 by severity (true positive) — treated as archival records rather than active alerts.

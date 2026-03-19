@@ -23,18 +23,17 @@ Prepend `sudo -u wazuh` on bare metal. Use `docker exec -it <container>` on Dock
 
 ### HTTP 000 — no response
 
-curl got no response at all. The indexer or XDR API is not reachable from where the command is running.
+curl got no response at all. The XDR API is not reachable from where the command is running.
 
-- **For `apply-index-template.sh`:** `wazuh.indexer` only resolves inside the Docker network. Use `INDEXER_HOST=https://localhost:9200` when running from the host.
-- **For the wodle:** Check that the host can reach `https://api-<fqdn>/public_api/v1/`. Verify firewall rules and proxy settings.
+Check that the host can reach `https://api-<fqdn>/public_api/v1/`. Verify firewall rules and proxy settings.
 
 ### HTTP 400 — bad request
 
-Usually a malformed FQDN. Check that `XDR_FQDN` is the bare hostname only — no `https://`, no trailing slash, no `api-` prefix. Example: `yourorg.xdr.us.paloaltonetworks.com`.
+Usually a malformed FQDN. Check that `XDR_FQDN` in `.secrets` is the bare hostname only — no `https://`, no trailing slash, no `api-` prefix. Example: `yourorg.xdr.us.paloaltonetworks.com`.
 
 ### HTTP 401 / 403 — authentication failure
 
-Wrong credentials or wrong security level. Verify `XDR_API_KEY`, `XDR_API_KEY_ID`, and `XDR_SECURITY_LEVEL` match what was generated in the Cortex XDR console. Advanced keys require SHA-256 authentication; Standard keys use a simpler scheme.
+Wrong credentials or wrong security level. Verify `XDR_API_KEY` and `XDR_API_KEY_ID` in `.secrets` match what was generated in the Cortex XDR console. Verify `XDR_SECURITY_LEVEL` in `run.sh` matches the key type. Advanced keys require SHA-256 authentication; Standard keys use a simpler scheme.
 
 ### HTTP 429 — rate limited
 
@@ -53,15 +52,11 @@ The init entrypoint runs before the wazuh user exists. This should not happen wi
 1. Check the decoder is installed: `ls /var/ossec/etc/decoders/ | grep cortex`
 2. Validate with wazuh-logtest:
    ```bash
-   echo '{"integration":"cortex-xdr","type":"incident","xdr_incident_id":"1","xdr_severity":"high","xdr_status":"new","xdr_description":"Test"}' \
+   echo '{"integration":"cortex-xdr","xdr_type":"incident","xdr_incident_id":"1","xdr_severity":"high","xdr_status":"new","xdr_description":"Test"}' \
      | /var/ossec/bin/wazuh-logtest
    ```
    Expected: `Rule id: 100533`
 3. Refresh the index pattern: **Dashboard management → Dashboards Management → wazuh-alerts-\* → Refresh field list**
-
-### Conflicting field warnings in the dashboard
-
-Older indices were created with dynamic mappings before the index template was applied. See the [index template section](install-bare-metal.md#step-4--apply-the-opensearch-index-template) for how to reindex affected indices.
 
 ### `Mitre Technique ID 'TAxxxx' not found in database` in ossec.log
 
@@ -84,7 +79,7 @@ The state file (`state.json`) stores two bookmarks:
 rm /var/ossec/wodles/cortex-xdr/state.json
 ```
 
-The next run will fetch the full incident history and alerts from `XDR_LOOKBACK_HOURS` back.
+The next run will fetch the last 30 days of alerts and incidents (first-run cap).
 
 **Backfill a specific window without touching production state:**
 
@@ -95,6 +90,8 @@ sudo -u wazuh /var/ossec/wodles/cortex-xdr/run.sh \
 ```
 
 `--all` mode never reads or writes the state file, so it is safe to run alongside the scheduled wodle.
+
+> **Note:** After a backfill run, the next scheduled poll re-fetches any overlapping window from the saved bookmark — this is intentional. Events will not be duplicated in Wazuh because the decoder and rules are stateless; however, if duplicate suppression matters, ensure the bookmarks from the scheduled wodle are ahead of the backfill window before running.
 
 ---
 

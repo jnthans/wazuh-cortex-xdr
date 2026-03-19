@@ -4,20 +4,20 @@
 
 ## Environment variables
 
-All configuration is passed to the wodle via environment variables set in `run.sh`, or via CLI flags passed directly to the wodle command.
+Runtime config is passed via environment variables set in `run.sh`. Sensitive values (`XDR_FQDN`, `XDR_API_KEY`, `XDR_API_KEY_ID`) must be stored in the secrets file or systemd credentials — not in `run.sh`. See [Credential priority chain](#credential-priority-chain) below.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `XDR_FQDN` | *(required)* | Bare tenant hostname — e.g. `yourorg.xdr.us.paloaltonetworks.com`. No `https://` prefix. |
-| `XDR_API_KEY` | *(required)* | API key secret. Prefer secrets file or systemd credentials over setting this directly. |
-| `XDR_API_KEY_ID` | *(required)* | Numeric API key ID. |
+| `XDR_FQDN` | *(required, secrets file)* | Bare tenant hostname — e.g. `yourorg.xdr.us.paloaltonetworks.com`. No `https://` prefix. |
+| `XDR_API_KEY` | *(required, secrets file)* | API key secret. |
+| `XDR_API_KEY_ID` | *(required, secrets file)* | Numeric API key ID. |
 | `XDR_SECURITY_LEVEL` | `advanced` | Auth scheme: `advanced` (SHA-256 + nonce + timestamp) or `standard`. |
 | `XDR_MODE` | `balanced` | Ingestion mode preset: `economy` \| `balanced` \| `enriched`. |
-| `XDR_LOOKBACK_HOURS` | `1` | Alert lookback window on first run (hours). Incidents always sweep full history on first run regardless of this value. |
+| `XDR_LOOKBACK_HOURS` | `1` | Lookback window for `--all` mode (hours). First run for both alerts and incidents is capped at 30 days. |
 | `XDR_STATE_FILE` | `/var/ossec/wodles/cortex-xdr/state.json` | Path to the state file that stores bookmarks between runs. |
 | `XDR_SECRETS_FILE` | `/var/ossec/wodles/cortex-xdr/.secrets` | Path to the `KEY=value` credentials file. |
 | `XDR_ALERT_SEVERITIES` | `high,critical` | Alert severity filter. Comma-separated (`low,medium,high,critical`) or `all`. Applied server-side. |
-| `XDR_ALERT_ACTIONS` | `DETECTED` | Alert action filter. `DETECTED`, `BLOCKED`, or `all`. Applied client-side. |
+| `XDR_ALERT_ACTIONS` | `all` | Alert action filter. `DETECTED`, `BLOCKED`, or `all`. Applied client-side. |
 | `XDR_INCIDENT_STATUSES` | *(unset)* | Explicit incident status filter, overrides `--incident-mode`. Comma-separated or `all`. |
 | `XDR_API_VERSION` | `v1` | Cortex XDR API version for the incidents endpoint. |
 | `XDR_ALERTS_API_VERSION` | `v2` | Cortex XDR API version for the alerts endpoint. Set to `v1` if your tenant has not migrated. |
@@ -58,8 +58,8 @@ Modes are named presets. Individual flags always override the mode for the curre
 | Mode | Type | Alert severities | Alert actions | Enrichment |
 |---|---|---|---|:---:|
 | `economy` | incidents | — | — | Off |
-| `balanced` | both | high, critical | DETECTED | Off |
-| `enriched` | both | all | DETECTED, BLOCKED | On |
+| `balanced` | both | high, critical | all | Off |
+| `enriched` | both | all | all | On |
 
 **Mode override examples:**
 
@@ -81,17 +81,18 @@ run.sh --mode balanced --alert-actions all
 
 ## Credential priority chain
 
-The wodle evaluates all three sources on every run. The highest-priority source that provides a value wins. You can mix sources (e.g. key from a secrets file, key ID from an env var).
+The wodle evaluates both sources on every run. The highest-priority source that provides a value wins.
 
 ```
-systemd $CREDENTIALS_DIRECTORY  >  .secrets file  >  environment variable
+systemd $CREDENTIALS_DIRECTORY  >  .secrets file
 ```
 
 | Option | Plaintext on disk | Requires |
 |---|:---:|---|
 | systemd encrypted credentials | No | systemd 250+, bare metal/VM only |
 | Secrets file (`root:wazuh 640`) | Yes, restricted | Nothing extra |
-| Env vars in `run.sh` | Yes, in script | Nothing extra |
+
+Copy `.secrets.example` to `.secrets` and populate `XDR_FQDN`, `XDR_API_KEY`, and `XDR_API_KEY_ID`. Set `chmod 640, chown root:wazuh` on the file.
 
 ---
 
@@ -103,12 +104,14 @@ Deploy a separate directory per tenant, each with its own `run.sh` and credentia
 # Tenant A
 mkdir -p /var/ossec/wodles/cortex-xdr-tenant-a
 cp wodle/* /var/ossec/wodles/cortex-xdr-tenant-a/
-# Edit run.sh: set XDR_FQDN, XDR_MODE, and credentials for Tenant A
+# Edit run.sh: set XDR_MODE and runtime config for Tenant A
+# Edit .secrets: set XDR_FQDN, XDR_API_KEY, XDR_API_KEY_ID for Tenant A
 
 # Tenant B
 mkdir -p /var/ossec/wodles/cortex-xdr-tenant-b
 cp wodle/* /var/ossec/wodles/cortex-xdr-tenant-b/
-# Edit run.sh: set XDR_FQDN, XDR_MODE, and credentials for Tenant B
+# Edit run.sh: set XDR_MODE and runtime config for Tenant B
+# Edit .secrets: set XDR_FQDN, XDR_API_KEY, XDR_API_KEY_ID for Tenant B
 ```
 
 Add one `<wodle>` block per tenant in `ossec.conf` with a distinct `<tag>`:
@@ -145,7 +148,6 @@ Each tenant directory has its own `state.json`, so bookmarks are fully independe
 |---|---|:---:|
 | Bare metal – secrets file | Update `.secrets` in place | No (read on next poll) |
 | Bare metal – systemd credentials | Re-encrypt with `systemd-creds encrypt`, restart manager | Yes |
-| Bare metal – env vars | Update `run.sh`, restart manager | Yes |
 | Docker Compose | Replace host secrets file, recreate container | Yes |
 | Docker Swarm | `docker secret create` new version, update service | Rolling |
 | Kubernetes | `kubectl create secret` with `--dry-run -o yaml \| kubectl apply` | No (kubelet syncs) |

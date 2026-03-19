@@ -12,15 +12,11 @@ Filtering strategy:
         All:     None  (no severity filter sent to API)
 
     action_filter — applied client-side after receiving each page.
-        Default: ["DETECTED"]  — BLOCKED alerts mean Cortex stopped the threat;
-                                  they are low-value noise in a SIEM context.
-        All:     None  (emit regardless of action)
+        Default: None  (all actions — both DETECTED and BLOCKED)
+        List:    e.g. ["DETECTED"]  to restrict to unblocked threats only
 
     In --all mode both filters are cleared — full historical fidelity.
-
-API version note:
-    Alerts moved from /v1/ to /v2/ in early 2025. Override with
-    XDR_ALERTS_API_VERSION=v1 in run.sh if your tenant hasn't migrated.
+    API version controlled by XDR_ALERTS_API_VERSION (default: v2).
 """
 
 import os
@@ -32,10 +28,6 @@ _MAX_ALERTS = 10_000
 _ENDPOINT   = "alerts/get_alerts_multi_events"
 
 _ALERTS_API_VERSION = os.environ.get("XDR_ALERTS_API_VERSION", "v2")
-
-# Default filters — applied when caller passes None
-_DEFAULT_SEVERITIES = ["high", "critical"]
-_DEFAULT_ACTIONS    = ["DETECTED"]
 
 
 def _build_filter(since_ms: int,
@@ -102,22 +94,17 @@ def fetch_and_emit_alerts(since_ms: int,
     Paginate through alerts, apply client-side action filter, emit each
     matching alert, and return (emitted_count, latest_creation_time_ms).
 
-    Defaults (when None is passed):
-        severity_filter → ["high", "critical"]
-        action_filter   → ["DETECTED"]
-
-    In --all mode both filters are cleared for full historical fidelity.
+    Filters are resolved by the caller (cortex_xdr.py):
+        None means no filter (all values pass through).
+        In --all mode both filters are cleared for full historical fidelity.
     """
     if all_mode:
         log(1, "Alert fetch: ALL mode – no filters applied")
         since_ms        = 0
         severity_filter = None
         action_filter   = None
-    else:
-        if severity_filter is None:
-            severity_filter = _DEFAULT_SEVERITIES
-        if action_filter is None:
-            action_filter = _DEFAULT_ACTIONS
+    # else: use filters as passed by the caller (cortex_xdr.py resolves
+    # the correct values per mode; None means no filter — all values)
 
     sev_label    = str(severity_filter) if severity_filter else "all"
     action_label = str(action_filter)   if action_filter   else "all"
@@ -170,7 +157,8 @@ def fetch_and_emit_alerts(since_ms: int,
             break
 
         if fetched >= _MAX_ALERTS:
-            log_error(f"Alert fetch reached hard cap of {_MAX_ALERTS}.")
+            log_error(f"Alert fetch reached hard cap of {_MAX_ALERTS}. "
+                      f"Bookmark set to last-seen ts — next run continues from here.")
             break
 
         offset += _PAGE_SIZE

@@ -53,34 +53,35 @@
   <!-- ════════════════════════════════════════════════════════════
        ALERT RULES  (100510–100529)
        Raw detections from Cortex endpoint and cloud sensors.
-       Default ingestion: high + critical, DETECTED action only.
+       Severity is the sole determinant of rule level.
+       Action, source, and category are available as event fields.
        ════════════════════════════════════════════════════════ -->
 
   <rule id="100510" level="5">
     <if_sid>100500</if_sid>
-    <field name="type">alert</field>
-    <description>Cortex XDR Alert: $(xdr_alert_name)</description>
+    <field name="xdr_type">alert</field>
+    <description>Cortex XDR Alert: $(xdr_name)</description>
     <group>cortex_xdr,cortex_xdr_alert,</group>
   </rule>
 
   <rule id="100511" level="5">
     <if_sid>100510</if_sid>
     <field name="xdr_severity">low</field>
-    <description>Cortex XDR Alert [LOW]: $(xdr_alert_name) on $(xdr_agent_hostname)</description>
+    <description>Cortex XDR Alert [LOW]: $(xdr_name) on $(xdr_host_name)</description>
     <group>cortex_xdr,cortex_xdr_alert,low_severity,</group>
   </rule>
 
-  <rule id="100512" level="9">
+  <rule id="100512" level="10">
     <if_sid>100510</if_sid>
     <field name="xdr_severity">medium</field>
-    <description>Cortex XDR Alert [MEDIUM]: $(xdr_alert_name) on $(xdr_agent_hostname)</description>
+    <description>Cortex XDR Alert [MEDIUM]: $(xdr_name) on $(xdr_host_name)</description>
     <group>cortex_xdr,cortex_xdr_alert,medium_severity,</group>
   </rule>
 
-  <rule id="100513" level="12">
+  <rule id="100513" level="13">
     <if_sid>100510</if_sid>
     <field name="xdr_severity">high</field>
-    <description>Cortex XDR Alert [HIGH]: $(xdr_alert_name) on $(xdr_agent_hostname)</description>
+    <description>Cortex XDR Alert [HIGH]: $(xdr_name) on $(xdr_host_name)</description>
     <group>cortex_xdr,cortex_xdr_alert,high_severity,
            gdpr_IV_35.7.d,hipaa_164.312.b,nist_800_53_SI.4,pci_dss_11.4,tsc_CC7.2,</group>
   </rule>
@@ -88,55 +89,11 @@
   <rule id="100514" level="15">
     <if_sid>100510</if_sid>
     <field name="xdr_severity">critical</field>
-    <description>Cortex XDR Alert [CRITICAL]: $(xdr_alert_name) on $(xdr_agent_hostname)</description>
+    <description>Cortex XDR Alert [CRITICAL]: $(xdr_name) on $(xdr_host_name)</description>
     <group>cortex_xdr,cortex_xdr_alert,critical_severity,
            gdpr_IV_35.7.d,hipaa_164.312.b,nist_800_53_SI.4,pci_dss_11.4,tsc_CC7.2,</group>
   </rule>
 
-  <rule id="100515" level="13">
-    <if_sid>100510</if_sid>
-    <field name="xdr_category">Malware</field>
-    <description>Cortex XDR Malware Alert: $(xdr_alert_name) on $(xdr_agent_hostname)</description>
-    <group>cortex_xdr,cortex_xdr_alert,malware,rootcheck,</group>
-  </rule>
-
-  <!-- BLOCKED = Cortex automatically stopped the threat -->
-  <rule id="100516" level="6">
-    <if_sid>100510</if_sid>
-    <field name="xdr_action">BLOCKED</field>
-    <description>Cortex XDR: Threat blocked by prevention policy on $(xdr_agent_hostname): $(xdr_alert_name)</description>
-    <group>cortex_xdr,cortex_xdr_alert,blocked,</group>
-  </rule>
-
-  <!-- DETECTED = threat seen but not stopped — highest priority alert action -->
-  <rule id="100517" level="12">
-    <if_sid>100510</if_sid>
-    <field name="xdr_action">DETECTED</field>
-    <description>Cortex XDR: Threat DETECTED but not blocked on $(xdr_agent_hostname): $(xdr_alert_name)</description>
-    <group>cortex_xdr,cortex_xdr_alert,detected_unblocked,
-           gdpr_IV_35.7.d,hipaa_164.312.b,nist_800_53_SI.4,pci_dss_11.4,</group>
-  </rule>
-
-  <rule id="100518" level="8">
-    <if_sid>100510</if_sid>
-    <field name="xdr_alert_source">XDR Analytics</field>
-    <description>Cortex XDR Behavioral Analytics Alert: $(xdr_alert_name)</description>
-    <group>cortex_xdr,cortex_xdr_alert,behavioral,</group>
-  </rule>
-
-  <rule id="100519" level="9">
-    <if_sid>100510</if_sid>
-    <field name="xdr_alert_source">XDR Analytics BIOC</field>
-    <description>Cortex XDR BIOC (Cloud/Identity) Alert: $(xdr_alert_name)</description>
-    <group>cortex_xdr,cortex_xdr_alert,bioc,</group>
-  </rule>
-
-  <rule id="100520" level="9">
-    <if_sid>100510</if_sid>
-    <field name="xdr_alert_source">Correlation</field>
-    <description>Cortex XDR Correlation Rule Alert: $(xdr_alert_name)</description>
-    <group>cortex_xdr,cortex_xdr_alert,correlation,</group>
-  </rule>
 
 
   <!-- ════════════════════════════════════════════════════════════
@@ -147,7 +104,7 @@
 
   <rule id="100530" level="6">
     <if_sid>100500</if_sid>
-    <field name="type">incident</field>
+    <field name="xdr_type">incident</field>
     <description>Cortex XDR Incident: $(xdr_description)</description>
     <group>cortex_xdr,cortex_xdr_incident,</group>
   </rule>
@@ -348,7 +305,7 @@
 
   <rule id="100599" level="5">
     <if_sid>100500</if_sid>
-    <field name="type">error</field>
+    <field name="xdr_type">error</field>
     <description>Cortex XDR wodle error: $(xdr_error)</description>
     <group>cortex_xdr,cortex_xdr_error,</group>
   </rule>

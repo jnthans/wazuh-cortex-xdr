@@ -10,15 +10,15 @@ Covers:
   - Tiered debug logging to stderr (never pollutes Wazuh stdout)
 
 Secret loading priority (first match wins):
-  1. systemd credentials directory  ($CREDENTIALS_DIRECTORY/xdr_api_key etc.)
+  1. systemd credentials directory  ($CREDENTIALS_DIRECTORY/xdr_fqdn, xdr_api_key, etc.)
   2. Secrets file                   ($XDR_SECRETS_FILE or default path)
-  3. Environment variables          ($XDR_API_KEY, $XDR_API_KEY_ID)
 """
 
+import datetime
 import hashlib
 import json
 import os
-import random
+import secrets
 import re
 import string
 import sys
@@ -35,12 +35,33 @@ _debug_level = 0
 
 INTEGRATION_TAG = "cortex-xdr"
 
-# Wodle envelope fields — added by emit(), not sourced from the XDR API.
-# Defined at module level so emit() doesn't rebuild the set on every call.
-_ENVELOPE = frozenset({"integration", "type"})
+# Fields added by emit() that are not sourced from the XDR API.
+_ENVELOPE = frozenset({"integration"})
+
+# Epoch-millisecond fields from the XDR API. emit() converts these to ISO 8601
+# so OpenSearch dynamic mapping detects them as dates without an index template.
+_TIMESTAMP_FIELDS = frozenset({
+    # Incident timestamps
+    "creation_time",
+    "modification_time",
+    "detection_time",
+    "resolved_timestamp",
+    # Alert timestamps
+    "local_insert_ts",
+    "last_modified_ts",
+    "detection_timestamp",
+    "end_match_attempt_ts",
+    "event_timestamp",
+    "causality_actor_process_execution_time",
+    "dst_causality_actor_process_execution_time",
+    "agent_host_boot_time",
+})
 
 # Default secrets file path (non-executable, root:wazuh 640)
 _DEFAULT_SECRETS_FILE = "/var/ossec/wodles/cortex-xdr/.secrets"
+
+# Allowlist for API version values interpolated into request URLs.
+_VALID_API_VERSIONS = frozenset({"v1", "v2"})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -71,7 +92,7 @@ def log_error(msg: str):
 
 def _nonce(length: int = 64) -> str:
     chars = string.ascii_letters + string.digits
-    return "".join(random.SystemRandom().choice(chars) for _ in range(length))
+    return "".join(secrets.choice(chars) for _ in range(length))
 
 
 def build_auth_headers() -> dict:
@@ -115,46 +136,61 @@ def build_auth_headers() -> dict:
 # HTTP client
 # ─────────────────────────────────────────────────────────────────────────────
 
+_TRANSIENT_HTTP_CODES = frozenset({429, 500, 502, 503, 504})
+_MAX_RETRIES = 3
+
+
 def api_post(path: str, body: dict, api_version: str = None) -> dict:
     """
-    POST to https://api-{FQDN}/public_api/{version}/{path}
-
-    api_version: explicit version for this call (e.g. "v2" for alerts).
-                 Falls back to config["api_version"] (default "v1").
-                 Passing the version as a parameter avoids temporarily
-                 mutating the shared config dict.
-
+    POST to https://api-{FQDN}/public_api/{version}/{path}.
+    api_version overrides config["api_version"] for this call (e.g. "v2" for alerts).
+    Retries up to 3 times on transient failures (timeout, network error, HTTP 429/5xx).
+    Permanent errors (HTTP 400/401/403) are not retried.
     Returns the parsed JSON response dict, or {} on error.
     """
     fqdn    = config["fqdn"]
     version = api_version or config.get("api_version", "v1")
+    if version not in _VALID_API_VERSIONS:
+        log_error(f"Invalid API version '{version}'. Must be one of: {', '.join(sorted(_VALID_API_VERSIONS))}")
+        return {}
     url     = f"https://api-{fqdn}/public_api/{version}/{path}"
     payload = json.dumps({"request_data": body}).encode("utf-8")
-    headers = build_auth_headers()
 
     log(2, f"POST {url}")
     log(3, f"Request body: {json.dumps(body)}")
 
-    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
-
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            raw = resp.read().decode("utf-8")
-            log(3, f"Response: {raw[:500]}")
-            return json.loads(raw)
-    except urllib.error.HTTPError as exc:
-        body_text = exc.read().decode("utf-8", errors="replace")
-        log_error(f"HTTP {exc.code} calling {path}: {body_text}")
-        return {}
-    except urllib.error.URLError as exc:
-        log_error(f"URL error calling {path}: {exc.reason}")
-        return {}
-    except json.JSONDecodeError as exc:
-        log_error(f"JSON decode error from {path}: {exc}")
-        return {}
-    except Exception as exc:
-        log_error(f"Unexpected error calling {path}: {exc}")
-        return {}
+    for attempt in range(_MAX_RETRIES):
+        headers = build_auth_headers()   # fresh nonce + timestamp each attempt
+        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                raw = resp.read().decode("utf-8")
+                log(3, f"Response: {raw[:500]}")
+                return json.loads(raw)
+        except urllib.error.HTTPError as exc:
+            body_text = exc.read().decode("utf-8", errors="replace")
+            if exc.code in _TRANSIENT_HTTP_CODES and attempt < _MAX_RETRIES - 1:
+                log(1, f"HTTP {exc.code} calling {path} "
+                       f"(attempt {attempt + 1}/{_MAX_RETRIES}), retrying in {2 ** attempt}s…")
+                time.sleep(2 ** attempt)
+                continue
+            log_error(f"HTTP {exc.code} calling {path}: {body_text}")
+            return {}
+        except (urllib.error.URLError, TimeoutError) as exc:
+            if attempt < _MAX_RETRIES - 1:
+                log(1, f"Network error calling {path} "
+                       f"(attempt {attempt + 1}/{_MAX_RETRIES}): {exc}, retrying in {2 ** attempt}s…")
+                time.sleep(2 ** attempt)
+                continue
+            log_error(f"Network error calling {path} after {_MAX_RETRIES} attempts: {exc}")
+            return {}
+        except json.JSONDecodeError as exc:
+            log_error(f"JSON decode error from {path}: {exc}")
+            return {}
+        except Exception as exc:
+            log_error(f"Unexpected error calling {path}: {exc}")
+            return {}
+    return {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -216,25 +252,39 @@ def ms_now() -> int:
 # Event emission
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _ms_to_iso_emit(ms: int):
+    """Convert a single positive epoch-ms int to ISO 8601 UTC with millisecond precision.
+    Returns None for zero, negative, or non-integer values (treated as unset)."""
+    if not isinstance(ms, int) or ms <= 0:
+        return None
+    dt = datetime.datetime.utcfromtimestamp(ms / 1000.0)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{ms % 1000:03d}Z"
+
+
+def _convert_ts_field(value):
+    """Convert a timestamp field (int or list[int]) from epoch ms to ISO 8601 string(s).
+    Returns None when the result would be empty so emit()'s None-stripping drops the field."""
+    if isinstance(value, list):
+        converted = [_ms_to_iso_emit(ms) for ms in value if isinstance(ms, int) and ms > 0]
+        return converted if converted else None
+    return _ms_to_iso_emit(value)
+
+
 def emit(record: dict, record_type: str):
     """
-    Emit a single Wazuh-compatible JSON event to stdout.
-    Each line is one event; Wazuh reads these via <ignore_output>no</ignore_output>.
-
-    Field namespacing — all XDR API fields are prefixed with 'xdr_' to avoid
-    collision with Wazuh's 13 reserved static field names (action, status, id,
-    user, srcip, dstip, srcport, dstport, protocol, url, data, extra_data,
-    system_name). Envelope fields ('integration', 'type') are not prefixed.
-
-    Null filtering — None values are stripped before serialisation. The XDR
-    API returns many null fields; emitting them wastes OpenSearch index space
-    and event size budget with no analytical value.
+    Emit a single JSON event to stdout (one line per event).
+    All XDR API fields are prefixed with 'xdr_' to avoid collision with
+    Wazuh reserved field names. Null values are dropped to reduce event size.
     """
-    out = {"integration": INTEGRATION_TAG, "type": record_type}
+    out = {"integration": INTEGRATION_TAG, "xdr_type": record_type}
     for k, v in record.items():
         if v is None:
             continue   # drop nulls — reduces event size and index noise
         if k not in _ENVELOPE:
+            if k in _TIMESTAMP_FIELDS:
+                v = _convert_ts_field(v)
+                if v is None:
+                    continue   # invalid/unset timestamp — drop the field
             out[f"xdr_{k}"] = v
         else:
             out[k] = v
@@ -250,7 +300,6 @@ def emit(record: dict, record_type: str):
 
 def ms_to_iso(ms: int) -> str:
     """Convert epoch milliseconds to a readable ISO 8601 UTC string for logging."""
-    import datetime
     if not ms:
         return "epoch"
     return datetime.datetime.utcfromtimestamp(ms / 1000).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -271,6 +320,7 @@ def _load_from_systemd_credentials() -> dict:
 
     found = {}
     for cred_name, config_key in (
+        ("xdr_fqdn",       "fqdn"),
         ("xdr_api_key",    "api_key"),
         ("xdr_api_key_id", "api_key_id"),
     ):
@@ -299,9 +349,20 @@ def _load_from_secrets_file(path: str) -> dict:
         return {}
 
     found   = {}
-    mapping = {"XDR_API_KEY": "api_key", "XDR_API_KEY_ID": "api_key_id"}
+    mapping = {
+        "XDR_FQDN":       "fqdn",
+        "XDR_API_KEY":    "api_key",
+        "XDR_API_KEY_ID": "api_key_id",
+    }
 
     try:
+        st = os.stat(path)
+        if st.st_mode & 0o044:   # group-read or other-read bits set
+            print(
+                f"[WARNING] Secrets file {path} is readable by group/other "
+                f"(mode {oct(st.st_mode & 0o777)}). Recommend: chmod 640.",
+                file=sys.stderr,
+            )
         with open(path) as f:
             for lineno, raw in enumerate(f, 1):
                 line = raw.strip()
@@ -334,24 +395,20 @@ def load_secrets():
     Priority (first match wins per key):
       1. systemd $CREDENTIALS_DIRECTORY  (memory-backed, encrypted at rest)
       2. Secrets file                     ($XDR_SECRETS_FILE or default path)
-      3. Environment variables            ($XDR_API_KEY, $XDR_API_KEY_ID)
     """
-    from_env = {
-        "api_key":    os.environ.get("XDR_API_KEY", ""),
-        "api_key_id": os.environ.get("XDR_API_KEY_ID", ""),
-    }
     from_file    = _load_from_secrets_file(
                        os.environ.get("XDR_SECRETS_FILE", _DEFAULT_SECRETS_FILE))
     from_systemd = _load_from_systemd_credentials()
 
-    # Higher-priority sources override lower ones
-    merged = {**from_env, **from_file, **from_systemd}
+    # Higher-priority source wins
+    merged = {**from_file, **from_systemd}
+    config["fqdn"]       = merged.get("fqdn", "")
     config["api_key"]    = merged.get("api_key", "")
     config["api_key_id"] = merged.get("api_key_id", "")
 
     # Log winning source for each key (value never logged)
-    sources = [("env", from_env), ("file", from_file), ("systemd", from_systemd)]
-    for key in ("api_key", "api_key_id"):
+    sources = [("file", from_file), ("systemd", from_systemd)]
+    for key in ("fqdn", "api_key", "api_key_id"):
         winner = "not set"
         for src_name, src_dict in reversed(sources):
             if src_dict.get(key):
@@ -410,13 +467,18 @@ def validate_config():
         _validate_fqdn(config["fqdn"])
 
     required = {
-        "api_key":    "XDR_API_KEY / secrets file / systemd credential",
-        "api_key_id": "XDR_API_KEY_ID / secrets file / systemd credential",
-        "fqdn":       "XDR_FQDN",
+        "fqdn":       "secrets file (XDR_FQDN) or systemd credential (xdr_fqdn)",
+        "api_key":    "secrets file (XDR_API_KEY) or systemd credential (xdr_api_key)",
+        "api_key_id": "secrets file (XDR_API_KEY_ID) or systemd credential (xdr_api_key_id)",
     }
     missing = [hint for key, hint in required.items() if not config.get(key)]
     if missing:
         print(f"[ERROR] Missing required config: {'; '.join(missing)}", file=sys.stderr)
+        sys.exit(1)
+
+    if not config.get("api_key_id", "").isdigit():
+        print("[ERROR] api_key_id must be a positive integer. "
+              "Check XDR_API_KEY_ID in your secrets file.", file=sys.stderr)
         sys.exit(1)
 
     log(1, f"Config OK – FQDN={config['fqdn']} key_id={config['api_key_id']} "

@@ -1,6 +1,14 @@
 # Wazuh - Cortex XDR Integration (Wodle)
 
-Wazuh wodle that ingests **alerts** and **incidents** from Palo Alto Cortex XDR tenant into Wazuh SIEM via the Cortex XDR REST API.
+Wazuh wodle that ingests **alerts (issues)** and **incidents (cases)** from Palo Alto Networks Cortex XDR tenants into Wazuh SIEM via the Cortex XDR REST API.
+
+---
+
+## Dashboard
+
+![Wazuh Threat Hunting dashboard with Cortex XDR incidents](artifacts/images/wazuh_xdr_incidents_pv.png)
+
+*Wazuh Threat Hunting dashboard filtered by integration `cortex-xdr`, showing ingested incidents with severity levels, rule IDs, and descriptions.*
 
 ---
 
@@ -12,21 +20,21 @@ Wazuh wodle that ingests **alerts** and **incidents** from Palo Alto Cortex XDR 
 - **Long-term archival** — Cortex does not retain data indefinitely. This integration persists all events in OpenSearch for compliance, forensics, and historical investigation.
 - **MITRE ATT&CK tactic tagging** — incidents with tactic mappings are tagged with `mitre_*` groups for custom dashboard filtering.
 - **Closed incident tracking** — resolved incidents are ingested as level 3 archival records.
-- **Secure credential management** — systemd encrypted credentials, secrets file, or environment variables. Priority chain evaluated on every run.
+- **Secure credential management** — FQDN, API key, and key ID stored in a restricted secrets file or systemd encrypted credentials.
 - **Multi-tenant** — deploy a separate directory and `run.sh` per tenant.
 - **Zero external Python dependencies** — stdlib only.
 
 ---
 
-## Installation guides
+## Installation
 
-Choose the guide that matches your deployment:
+1. Copy `wodle/*` to `/var/ossec/wodles/cortex-xdr/` on the Wazuh manager (or agent host).
+2. Create `.secrets` from `.secrets.example` — set `XDR_FQDN`, `XDR_API_KEY`, `XDR_API_KEY_ID`. Set permissions `chmod 640, chown root:wazuh`. Edit `run.sh` — set `XDR_MODE` and other runtime config.
+3. Copy `rules/cortex_xdr_rules.xml` → `/var/ossec/etc/rules/` and `rules/cortex_xdr_decoder.xml` → `/var/ossec/etc/decoders/`.
+4. Add a wodle stanza to `/var/ossec/etc/ossec.conf` using the example in [artifacts/configs/ossec_cortex_xdr.conf](artifacts/configs/ossec_cortex_xdr.conf).
+5. Restart Wazuh manager.
 
-| Environment | Guide |
-|---|---|
-| Bare metal or VM | [artifacts/guides/install-bare-metal.md](artifacts/guides/install-bare-metal.md) |
-| Docker (single-node or multi-node) | [artifacts/guides/install-docker.md](artifacts/guides/install-docker.md) |
-| Kubernetes | [artifacts/guides/install-kubernetes.md](artifacts/guides/install-kubernetes.md) |
+See [artifacts/configs/](artifacts/configs/) for ossec.conf examples and credential configuration. Docker Compose volume mappings are in [artifacts/overrides/](artifacts/overrides/).
 
 ---
 
@@ -49,16 +57,11 @@ wazuh-cortex-xdr/
 │   │   ├── ossec_cortex_xdr.conf               ← ossec.conf wodle stanza examples
 │   │   └── cortex-xdr-credentials.conf         ← systemd drop-in for encrypted credentials
 │   ├── guides/
-│   │   ├── install-bare-metal.md               ← Bare metal / VM installation guide
-│   │   ├── install-docker.md                   ← Docker installation guide
-│   │   ├── install-kubernetes.md               ← Kubernetes installation guide
 │   │   ├── configuration.md                    ← All env vars, CLI flags, modes, multi-tenant
 │   │   ├── rules-reference.md                  ← Rule families, severity mapping, MITRE, compliance
 │   │   └── troubleshooting.md                  ← Test commands, common errors, reset / backfill
-│   ├── index_template/
-│   │   ├── wazuh-cortex-xdr-index-template.json     ← OpenSearch field mapping template (API)
-│   │   ├── wazuh-cortex-xdr-index-template-gui.json ← OpenSearch field mapping template (Dashboard GUI)
-│   │   └── apply-index-template.sh             ← Script to apply the index template
+│   ├── images/
+│   │   └── wazuh_xdr_incidents_pv.png          ← Dashboard screenshot
 │   └── overrides/
 │       ├── docker-compose.single-node.override.yml ← Docker volume mapping (single-node)
 │       └── docker-compose.multi-node.override.yml  ← Docker volume mapping (multi-node)
@@ -73,8 +76,8 @@ wazuh-cortex-xdr/
 | Mode | Incidents | Alerts | Enrichment | Use when |
 |---|---|---|:---:|---|
 | `economy` | All statuses | None | Off | Storage-constrained; incidents already aggregate alert data |
-| `balanced` | All statuses | High + critical, DETECTED only | Off | **Recommended** for most environments |
-| `enriched` | All statuses | All severities, DETECTED + BLOCKED | On | Full archival fidelity, compliance, forensic requirements |
+| `balanced` | All statuses | High + critical (all actions) | Off | **Recommended** for most environments |
+| `enriched` | All statuses | All severities (all actions) | On | Full archival fidelity, compliance, forensic requirements |
 
 Set the mode in `run.sh` via `XDR_MODE`, or pass `--mode` on the command line.
 The default is `balanced`. Individual flags override the mode for a single run. See [configuration reference](artifacts/guides/configuration.md) for details.
@@ -85,7 +88,7 @@ The default is `balanced`. Individual flags override the mode for a single run. 
 
 ```
 ossec.conf <wodle command>
-    └─► run.sh  (sets XDR_FQDN, XDR_MODE, credentials; execs cortex_xdr.py)
+    └─► run.sh  (sets XDR_MODE and runtime config; execs cortex_xdr.py)
             └─► cortex_xdr.py  (parses args, applies mode preset, loads state)
                     ├─► cortex_xdr_alerts.py     → api_post() → emit() → stdout
                     └─► cortex_xdr_incidents.py  → api_post() → emit() → stdout
@@ -96,7 +99,6 @@ ossec.conf <wodle command>
                           Secret priority chain (first match wins):
                           [systemd $CREDENTIALS_DIRECTORY]
                                     > [.secrets file]
-                                    > [env var]
 
 stdout ──► Wazuh wodle manager ──► cortex_xdr_decoder.xml ──► cortex_xdr_rules.xml
                                                                        ↓
@@ -104,6 +106,8 @@ stdout ──► Wazuh wodle manager ──► cortex_xdr_decoder.xml ──► 
 ```
 
 Each event is emitted as a single JSON line. All XDR API fields are prefixed with `xdr_` to avoid collisions with Wazuh's reserved field names. Wazuh's JSON decoder flattens all fields into `data.*` for rule matching and dashboard display.
+
+Epoch-millisecond timestamp fields returned by the Cortex XDR API are converted to ISO 8601 strings before emission (e.g. `1706540499609` → `"2024-01-29T18:41:39.609Z"`). This causes OpenSearch's dynamic field mapping to detect them as date fields automatically — no custom index template is required.
 
 ### Deployment topology
 

@@ -24,7 +24,7 @@ Enrichment:
     Merges scalar fields from get_incident_extra_data. Skips nested arrays
     (alerts, artifacts) which would exceed Wazuh's 65535-byte line limit.
     The base incident object carries sufficient data for SIEM alerting;
-    the xdr_xdr_url field links directly to the full Cortex investigation.
+    the xdr_url field links directly to the full Cortex investigation.
 """
 
 from typing import List, Optional
@@ -113,12 +113,12 @@ def fetch_and_emit_incidents(since_ms: int,
     enrich, emit each matching incident, and return
     (emitted_count, latest_modification_time_ms).
 
-    incident_mode controls the default status filter when status_filter=None:
+    status_filter is resolved by the caller (cortex_xdr.py):
         "active"  → ["new", "under_investigation"]
         "closed"  → ["resolved_true_positive", "resolved_false_positive"]
+        "both"    → None  (no filter — all statuses ingested)
 
-    Explicit status_filter overrides incident_mode defaults.
-    In --all mode all status filtering is cleared.
+    In --all mode, status_filter is cleared regardless of what was passed.
 
     Bookmark is saved as latest_ts + 1ms by the caller (cortex_xdr.py) to
     work around the API's lack of a 'gt' operator (only 'gte' is supported).
@@ -127,10 +127,8 @@ def fetch_and_emit_incidents(since_ms: int,
         log(1, "Incident fetch: ALL mode – no time filter, no status filter")
         since_ms      = 0
         status_filter = None
-    else:
-        if status_filter is None:
-            status_filter = (_ACTIVE_STATUSES if incident_mode == "active"
-                             else _CLOSED_STATUSES)
+    # else: use status_filter as passed by the caller (cortex_xdr.py resolves
+    # the correct value per mode; None means no filter — all statuses)
 
     mode_label   = incident_mode if not all_mode else "all"
     status_label = str(status_filter) if status_filter else "all"
@@ -158,9 +156,8 @@ def fetch_and_emit_incidents(since_ms: int,
         for inc in page:
             fetched += 1
 
-            # Advance bookmark past every incident we examine, even skipped ones.
-            # This ensures the next run's time window moves forward correctly
-            # regardless of how many incidents are filtered out by status.
+            # Advance bookmark even for skipped incidents so the time window
+            # moves forward regardless of how many are filtered by status.
             ts = inc.get("modification_time") or inc.get("creation_time") or 0
             if ts > latest_ts:
                 latest_ts = ts
@@ -200,7 +197,8 @@ def fetch_and_emit_incidents(since_ms: int,
             break
 
         if fetched >= _MAX_INCIDENTS:
-            log_error(f"Reached hard cap of {_MAX_INCIDENTS} fetched incidents.")
+            log_error(f"Incident fetch reached hard cap of {_MAX_INCIDENTS}. "
+                      f"Bookmark set to last-seen ts — next run continues from here.")
             break
 
         offset += _PAGE_SIZE
