@@ -1,4 +1,4 @@
-# Wazuh - Cortex XDR Integration (Wodle)
+Cortex XDR - Wazuh Integration
 
 Wazuh wodle that ingests **alerts (issues)** and **incidents (cases)** from Palo Alto Networks Cortex XDR tenants into Wazuh SIEM via the Cortex XDR REST API.
 
