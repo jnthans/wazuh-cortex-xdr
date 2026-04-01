@@ -1,169 +1,120 @@
 #!/usr/bin/env python3
 """
-cortex_xdr_alerts.py – Fetch and emit Cortex XDR alerts.
+cortex_xdr_alerts.py - Fetch and emit Cortex XDR alerts.
 
 Public surface:
-    fetch_and_emit_alerts(since_ms, all_mode, severity_filter, action_filter)
-    -> (count, latest_ts)
+    fetch_alerts(credentials, cursor, config) -> updated_cursor
 
-Filtering strategy:
-    severity_filter — sent to the API (server-side). Reduces data transfer.
-        Default: ["high", "critical"]
-        All:     None  (no severity filter sent to API)
-
-    action_filter — applied client-side after receiving each page.
-        Default: None  (all actions — both DETECTED and BLOCKED)
-        List:    e.g. ["DETECTED"]  to restrict to unblocked threats only
-
-    In --all mode both filters are cleared — full historical fidelity.
-    API version controlled by XDR_ALERTS_API_VERSION (default: v2).
+Uses the v1 get_alerts endpoint which returns flat alert objects with full
+forensic context (process paths, file hashes, network info, MITRE mapping).
+The v2 get_alerts_multi_events endpoint nests event arrays inside each alert,
+producing much larger responses that risk timeout — avoid it for SIEM ingestion.
 """
 
-import os
-from typing import List, Optional
-from cortex_xdr_utils import api_post, emit, log, log_error, ms_to_iso
+from cortex_xdr_utils import (
+    build_event, emit, emit_error, log, ms_to_iso_log, ms_now,
+    xdr_api_post,
+)
 
-_PAGE_SIZE  = 100
+_PAGE_SIZE = 100
 _MAX_ALERTS = 10_000
-_ENDPOINT   = "alerts/get_alerts_multi_events"
-
-_ALERTS_API_VERSION = os.environ.get("XDR_ALERTS_API_VERSION", "v2")
+_ENDPOINT = "alerts/get_alerts"
 
 
-def _build_filter(since_ms: int,
-                  severity_filter: Optional[List]) -> dict:
-    """
-    Build the API request body.
-
-    severity_filter is sent to the API using the supported 'in' operator.
-    action_filter is NOT sent to the API — it is applied client-side because
-    'action' is remapped to 'xdr_action' by emit() and the raw field name
-    varies between alert types.
-    """
+def _build_request(since_ms):
+    """Build the API request body for get_alerts."""
     body = {
-        "sort_field": "creation_time",
-        "sort_order": "asc",
+        "sort": {
+            "field": "creation_time",
+            "keyword": "asc",
+        },
     }
 
-    filters = []
-
     if since_ms > 0:
-        filters.append({
-            "field":    "creation_time",
-            "operator": "gte",
-            "value":    since_ms,
-        })
-
-    if severity_filter:
-        filters.append({
-            "field":    "severity",
-            "operator": "in",
-            "value":    severity_filter,
-        })
-
-    if filters:
-        body["filters"] = filters
+        body["filters"] = [
+            {
+                "field":    "creation_time",
+                "operator": "gte",
+                "value":    since_ms,
+            }
+        ]
 
     return body
 
 
-def _fetch_page(since_ms: int,
-                offset: int,
-                severity_filter: Optional[List]) -> tuple:
-    """Fetch one page. Returns (alerts_list, total_count)."""
-    body = _build_filter(since_ms, severity_filter)
+def _fetch_page(since_ms, offset, credentials, config):
+    """Fetch one page.  Returns (alerts_list, total_count)."""
+    body = _build_request(since_ms)
     body["search_from"] = offset
-    body["search_to"]   = offset + _PAGE_SIZE
+    body["search_to"] = offset + _PAGE_SIZE
 
-    log(2, f"Alerts API version: {_ALERTS_API_VERSION}")
-    log(3, f"Alert request body: {body}")
-    resp = api_post(_ENDPOINT, body, api_version=_ALERTS_API_VERSION)
+    log(3, "Alert request body: {}", body)
+    resp = xdr_api_post(_ENDPOINT, body, credentials, config)
 
-    reply       = resp.get("reply") or {}
-    alerts      = reply.get("alerts") or []
+    reply = resp.get("reply") or {}
+    alerts = reply.get("alerts") or []
     total_count = reply.get("total_count", None)
-    log(2, f"Alert page offset={offset}: got {len(alerts)}, total_count={total_count}")
+    log(2, "Alert page offset={}: got {}, total_count={}", offset, len(alerts), total_count)
     return alerts, total_count
 
 
-def fetch_and_emit_alerts(since_ms: int,
-                           all_mode: bool          = False,
-                           severity_filter: Optional[List] = None,
-                           action_filter: Optional[List]   = None) -> tuple:
+def fetch_alerts(credentials, cursor, config):
+    """Paginate through alerts, emit each, return updated cursor (epoch-ms).
+
+    cursor:  epoch-ms start time (from state or computed by orchestrator).
+             None triggers lookback calculation.
     """
-    Paginate through alerts, apply client-side action filter, emit each
-    matching alert, and return (emitted_count, latest_creation_time_ms).
+    if cursor:
+        since_ms = cursor
+    else:
+        since_ms = ms_now() - int(config["lookback_hours"] * 3600 * 1000)
 
-    Filters are resolved by the caller (cortex_xdr.py):
-        None means no filter (all values pass through).
-        In --all mode both filters are cleared for full historical fidelity.
-    """
-    if all_mode:
-        log(1, "Alert fetch: ALL mode – no filters applied")
-        since_ms        = 0
-        severity_filter = None
-        action_filter   = None
-    # else: use filters as passed by the caller (cortex_xdr.py resolves
-    # the correct values per mode; None means no filter — all values)
+    log(1, "Fetching alerts since ts={} ({})", since_ms, ms_to_iso_log(since_ms))
 
-    sev_label    = str(severity_filter) if severity_filter else "all"
-    action_label = str(action_filter)   if action_filter   else "all"
-    log(1, f"Fetching alerts since ts={since_ms} ({ms_to_iso(since_ms)}), "
-           f"severity={sev_label} (server-side), action={action_label} (client-side)")
-
-    count     = 0
-    fetched   = 0
+    count = 0
+    fetched = 0
     latest_ts = since_ms
-    offset    = 0
+    offset = 0
     api_total = None
 
     while True:
-        page, page_total = _fetch_page(since_ms, offset, severity_filter)
+        page, page_total = _fetch_page(since_ms, offset, credentials, config)
 
         if api_total is None and page_total is not None:
             api_total = page_total
-            log(1, f"API reports {api_total} total alerts matching filters")
+            log(1, "API reports {} total alerts", api_total)
 
         if not page:
-            log(2, "Alert page empty — pagination complete")
+            log(2, "Alert page empty - pagination complete")
             break
 
         for alert in page:
             fetched += 1
-
-            # Client-side action filter (raw field before xdr_ remapping)
-            if action_filter is not None:
-                raw_action = alert.get("action") or ""
-                if raw_action not in action_filter:
-                    log(3, f"Skipping alert {alert.get('alert_id')} "
-                           f"(action={raw_action!r} not in {action_filter})")
-                    ts = alert.get("creation_time") or 0
-                    if ts > latest_ts:
-                        latest_ts = ts
-                    continue
-
-            emit(alert, "alert")
+            emit(build_event(alert, "alert"))
             ts = alert.get("creation_time") or alert.get("local_insert_ts") or 0
             if ts > latest_ts:
                 latest_ts = ts
             count += 1
 
         if api_total is not None and fetched >= api_total:
-            log(1, f"Fetched {fetched}/{api_total} alerts from API — done")
+            log(1, "Fetched {}/{} alerts from API - done", fetched, api_total)
             break
 
         if len(page) < _PAGE_SIZE:
-            log(2, f"Short page ({len(page)}) — pagination complete")
+            log(2, "Short page ({}) - pagination complete", len(page))
             break
 
         if fetched >= _MAX_ALERTS:
-            log_error(f"Alert fetch reached hard cap of {_MAX_ALERTS}. "
-                      f"Bookmark set to last-seen ts — next run continues from here.")
+            emit_error("alerts",
+                       "Alert fetch reached hard cap of {}. "
+                       "Next run continues from here.".format(_MAX_ALERTS))
             break
 
         offset += _PAGE_SIZE
 
-    log(1, f"Alert fetch complete: {count} emitted "
-           f"({fetched} fetched, {fetched - count} filtered by action)")
-    return count, latest_ts
+    log(1, "Alerts: {} emitted", count)
 
+    # Return updated cursor: +1ms to avoid re-fetch (API uses gte, not gt)
+    if latest_ts > since_ms:
+        return latest_ts + 1
+    return cursor or ms_now()

@@ -1,18 +1,18 @@
 <!--
-  Wazuh Custom Decoder – Cortex XDR Integration
+  Wazuh Custom Decoder - Cortex XDR Integration
   ===============================================
   File: /var/ossec/etc/decoders/cortex_xdr_decoder.xml
 
-  The wodle emits plain JSON lines; Wazuh's built-in JSON_Decoder plugin
-  parses all fields into data.* automatically. This decoder just anchors the
-  prematch so our rules can reliably use <decoded_as>json</decoded_as> and
-  <field name="integration">cortex-xdr</field>.
+  Wodle command output arrives as raw JSON lines on stdout with no syslog
+  wrapper or program_name.  Wazuh's built-in JSON decoder handles the
+  parsing; this decoder anchors the prematch so rules can identify
+  Cortex XDR events via the integration field.
 
   Verify with: /var/ossec/bin/wazuh-logtest
   Apply with:  systemctl restart wazuh-manager
 -->
 
-<decoder name="cortex-xdr-json">
-  <prematch>{"integration": "cortex-xdr"</prematch>
+<decoder name="cortex_xdr">
+  <prematch>{"integration":"cortex_xdr"</prematch>
   <plugin_decoder>JSON_Decoder</plugin_decoder>
 </decoder>

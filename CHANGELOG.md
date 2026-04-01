@@ -5,6 +5,64 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.2.0] – 2026-04-01
+
+This release aligns the Cortex XDR integration with the siem-integration-framework, improving
+reliability, security, and efficiency. Previous design choices that added unnecessary complexity
+have been removed in favor of a streamlined wodle that delegates filtering and routing to Wazuh
+rules where it belongs.
+
+### Breaking changes
+
+- **Mode system removed.** The `--mode`, `--alert-severities`, `--alert-actions`, `--enrich`, and
+  `--incident-mode` CLI flags no longer exist. The wodle now always fetches all alerts and all
+  incidents with no client-side filtering. Use `--source` to select `alerts`, `incidents`, or `both`
+  (default). Wazuh rules handle severity differentiation and status-based routing.
+- **`XDR_MODE` environment variable removed** from `run.sh`. Remove it from any automation that
+  sets it.
+- **`XDR_ALERT_SEVERITIES`, `XDR_ALERT_ACTIONS`, `XDR_INCIDENT_STATUSES` environment variables
+  removed.** These filters added complexity without reducing API load (applied client-side after
+  full pages were fetched).
+- **`XDR_API_VERSION` and `XDR_ALERTS_API_VERSION` environment variables removed.** All API calls
+  now use v1 exclusively.
+
+### Fixed
+
+- **Alert timeout:** Switched from v2 `get_alerts_multi_events` endpoint (nested `events[]` arrays
+  per alert, 5–20 KB+ each) to v1 `get_alerts` (flat alert objects, ~1–2 KB each). The v2 endpoint
+  caused 30-second timeouts with as few as 18 alerts.
+- **Lookback inconsistency:** Three different defaults existed — `run.sh` set 24 hours,
+  `cortex_xdr.py` fell back to 1 hour, and first run hardcoded 30 days. Now unified: 24-hour
+  default everywhere via `XDR_LOOKBACK_HOURS`.
+- Decoder `<prematch>` now anchors on `{"integration":"cortex_xdr"` instead of matching on
+  `<program_name>`, which wodle command output does not carry.
+- Base rule changed from `<decoded_as>cortex_xdr</decoded_as>` to `<decoded_as>json</decoded_as>`
+  to match the JSON_Decoder plugin output.
+- All XDR API fields nested under `xdr` key (dot notation: `xdr.severity`, `xdr.status`) instead
+  of flat `xdr_` underscore prefix, avoiding collisions with Wazuh reserved field names.
+- **`event_type` no longer overwritten.** The wodle previously set `event_type` to `"incidents"`
+  or `"alerts"` to identify the source endpoint, but `event_type` is a legitimate field returned
+  by the Cortex XDR alerts API. Overwriting it broke Wazuh processing of alert events. Endpoint
+  identification now uses a new `xdr.type` key (`"alert"` or `"incident"`).
+
+### Removed
+
+- Mode presets (`MODES` dict, `_apply_mode()`), filter resolution helpers, and all mode-related
+  CLI flags — ~130 lines of orchestrator complexity.
+- Enrichment option (`get_incident_extra_data`) — added an API call per incident and risked timeout;
+  the `xdr_url` field in each incident links directly to the full Cortex XDR investigation.
+- `_VALID_API_VERSIONS` allowlist and `api_version` parameter from `xdr_api_post()` — no longer
+  needed with a single API version.
+- Docker Compose override files (`artifacts/overrides/`) — out of scope for this project.
+
+### Changed
+
+- Documentation fully rewritten to remove all mode references and align with current code.
+- State keys documented as `alerts_cursor` and `incidents_cursor` (were incorrectly documented
+  as `last_alert_ts` and `last_incident_ts`).
+
+---
+
 ## [1.1.0] – 2026-03-19
 
 ### Fixed

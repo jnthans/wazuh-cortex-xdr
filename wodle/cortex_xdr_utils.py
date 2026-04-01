@@ -1,25 +1,31 @@
 #!/usr/bin/env python3
 """
-cortex_xdr_utils.py – Shared utilities for the Cortex XDR Wazuh wodle.
+cortex_xdr_utils.py - Shared utilities for the Cortex XDR Wazuh wodle.
 
-Covers:
-  - Advanced / Standard API auth header generation
-  - HTTP POST to the Cortex XDR REST API
-  - State file load/save (atomic write, timestamp bookmarks)
-  - Structured JSON emit to stdout (Wazuh ingestion)
-  - Tiered debug logging to stderr (never pollutes Wazuh stdout)
+Functions (framework order):
+  1.  log()               - stderr, lazy formatting
+  2.  emit()              - stdout, compact JSON, flush
+  3.  emit_error()        - structured error event
+  4.  load_secrets_file() - parse KEY=VALUE file
+  5.  get_secret()        - three-tier credential chain
+  6.  load_state()        - JSON file to dict
+  7.  save_state()        - atomic write via tempfile + os.replace
+  8.  http_post()         - POST with JSON body
+  9.  http_with_retry()   - 429/5xx retry wrapper
+  10. xdr_auth_headers()  - HMAC auth header builder
 
-Secret loading priority (first match wins):
-  1. systemd credentials directory  ($CREDENTIALS_DIRECTORY/xdr_fqdn, xdr_api_key, etc.)
-  2. Secrets file                   ($XDR_SECRETS_FILE or default path)
+Secret loading priority (first match wins per key):
+  1. systemd $CREDENTIALS_DIRECTORY  (encrypted at rest, memory-only)
+  2. .secrets file                   (KEY=VALUE, chmod 640)
+  3. Environment variable            (least secure, testing only)
 """
 
 import datetime
 import hashlib
 import json
 import os
-import secrets
 import re
+import secrets as secrets_mod
 import string
 import sys
 import tempfile
@@ -27,19 +33,14 @@ import time
 import urllib.error
 import urllib.request
 
-# ── Module-level config (populated by cortex_xdr.py at startup) ──────────────
-config = {}
+# ── Module-level constants ────────────────────────────────────────────────────
 
-# Debug level: 0=off, 1=info, 2=verbose, 3=trace
-_debug_level = 0
+INTEGRATION_NAME = "cortex_xdr"
+NAMESPACE = "xdr"
+DEBUG_LEVEL = 0
 
-INTEGRATION_TAG = "cortex-xdr"
-
-# Fields added by emit() that are not sourced from the XDR API.
-_ENVELOPE = frozenset({"integration"})
-
-# Epoch-millisecond fields from the XDR API. emit() converts these to ISO 8601
-# so OpenSearch dynamic mapping detects them as dates without an index template.
+# Epoch-millisecond fields from the XDR API.  build_event() converts these
+# to ISO 8601 so OpenSearch dynamic mapping detects them as dates.
 _TIMESTAMP_FIELDS = frozenset({
     # Incident timestamps
     "creation_time",
@@ -57,186 +58,195 @@ _TIMESTAMP_FIELDS = frozenset({
     "agent_host_boot_time",
 })
 
-# Default secrets file path (non-executable, root:wazuh 640)
-_DEFAULT_SECRETS_FILE = "/var/ossec/wodles/cortex-xdr/.secrets"
-
-# Allowlist for API version values interpolated into request URLs.
-_VALID_API_VERSIONS = frozenset({"v1", "v2"})
+# HTTP status codes eligible for automatic retry.
+_TRANSIENT_CODES = frozenset({429, 500, 502, 503, 504})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Logging
+# 1. Logging
 # ─────────────────────────────────────────────────────────────────────────────
 
-def set_debug_level(level: int):
-    global _debug_level
-    _debug_level = level
-
-
-def log(level: int, msg: str):
-    """Write debug messages to stderr only – never pollutes Wazuh's stdout pipe."""
-    if level <= _debug_level:
-        prefix = ["", "[INFO]", "[DEBUG]", "[TRACE]"][min(level, 3)]
-        print(f"{prefix} {msg}", file=sys.stderr, flush=True)
-
-
-def log_error(msg: str):
-    """Always print errors to stderr AND emit a structured error event to stdout."""
-    print(f"[ERROR] {msg}", file=sys.stderr, flush=True)
-    emit({"error": msg}, "error")
+def log(level, msg, *args):
+    if level <= DEBUG_LEVEL:
+        text = msg.format(*args) if args else msg
+        sys.stderr.write("[{}] {}\n".format(INTEGRATION_NAME, text))
+        sys.stderr.flush()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Auth header generation
+# 2. Event emission
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _nonce(length: int = 64) -> str:
-    chars = string.ascii_letters + string.digits
-    return "".join(secrets.choice(chars) for _ in range(length))
+def emit(event):
+    sys.stdout.write(json.dumps(event, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
 
 
-def build_auth_headers() -> dict:
+def _ms_to_iso(ms):
+    """Convert a single positive epoch-ms int to ISO 8601 UTC with ms precision.
+    Returns None for zero, negative, or non-integer values."""
+    if not isinstance(ms, int) or ms <= 0:
+        return None
+    dt = datetime.datetime.utcfromtimestamp(ms / 1000.0)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + "{:03d}Z".format(ms % 1000)
+
+
+def _convert_ts_field(value):
+    """Convert a timestamp field (int or list[int]) from epoch-ms to ISO 8601.
+    Returns None when the result would be empty so null-stripping drops it."""
+    if isinstance(value, list):
+        converted = [_ms_to_iso(ms) for ms in value if isinstance(ms, int) and ms > 0]
+        return converted if converted else None
+    return _ms_to_iso(value)
+
+
+def build_event(record, event_type):
+    """Transform a raw XDR API record into framework event format.
+
+    Drops nulls, converts epoch-ms timestamp fields to ISO 8601, and wraps
+    all vendor data under the NAMESPACE key.
     """
-    Build authentication headers based on the configured security level.
-
-    Standard:  Authorization = SHA-256(api_key)
-    Advanced:  Authorization = SHA-256(api_key + nonce + timestamp_ms)
-               Additional headers: x-xdr-timestamp, x-xdr-nonce
-    """
-    api_key    = config["api_key"]
-    api_key_id = config["api_key_id"]
-    level      = config.get("security_level", "advanced").lower()
-
-    if level == "standard":
-        auth = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
-        headers = {
-            "Content-Type":  "application/json",
-            "x-xdr-auth-id": str(api_key_id),
-            "Authorization": auth,
-        }
-        log(3, "Built Standard auth headers")
-    else:
-        timestamp_ms = str(int(time.time() * 1000))
-        nonce        = _nonce()
-        payload      = f"{api_key}{nonce}{timestamp_ms}"
-        auth         = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-        headers = {
-            "Content-Type":    "application/json",
-            "x-xdr-auth-id":   str(api_key_id),
-            "x-xdr-timestamp": timestamp_ms,
-            "x-xdr-nonce":     nonce,
-            "Authorization":   auth,
-        }
-        log(3, f"Built Advanced auth headers (ts={timestamp_ms})")
-
-    return headers
+    inner = {"type": event_type}
+    for k, v in record.items():
+        if v is None:
+            continue
+        if k in _TIMESTAMP_FIELDS:
+            v = _convert_ts_field(v)
+            if v is None:
+                continue
+        inner[k] = v
+    return {"integration": INTEGRATION_NAME, NAMESPACE: inner}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# HTTP client
+# 3. Error emission
 # ─────────────────────────────────────────────────────────────────────────────
 
-_TRANSIENT_HTTP_CODES = frozenset({429, 500, 502, 503, 504})
-_MAX_RETRIES = 3
+def emit_error(source, message, code=None):
+    event = {
+        "integration": INTEGRATION_NAME,
+        NAMESPACE: {
+            "type": "error",
+            "error_source": source,
+            "error_message": message[:500],
+        },
+    }
+    if code is not None:
+        event[NAMESPACE]["error_code"] = code
+    emit(event)
 
 
-def api_post(path: str, body: dict, api_version: str = None) -> dict:
-    """
-    POST to https://api-{FQDN}/public_api/{version}/{path}.
-    api_version overrides config["api_version"] for this call (e.g. "v2" for alerts).
-    Retries up to 3 times on transient failures (timeout, network error, HTTP 429/5xx).
-    Permanent errors (HTTP 400/401/403) are not retried.
-    Returns the parsed JSON response dict, or {} on error.
-    """
-    fqdn    = config["fqdn"]
-    version = api_version or config.get("api_version", "v1")
-    if version not in _VALID_API_VERSIONS:
-        log_error(f"Invalid API version '{version}'. Must be one of: {', '.join(sorted(_VALID_API_VERSIONS))}")
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. Secrets file loading
+# ─────────────────────────────────────────────────────────────────────────────
+
+def load_secrets_file(path):
+    """Parse KEY=VALUE secrets file.  Returns dict of raw key-value pairs."""
+    if not path or not os.path.isfile(path):
         return {}
-    url     = f"https://api-{fqdn}/public_api/{version}/{path}"
-    payload = json.dumps({"request_data": body}).encode("utf-8")
 
-    log(2, f"POST {url}")
-    log(3, f"Request body: {json.dumps(body)}")
+    try:
+        st = os.stat(path)
+        if st.st_mode & 0o007:
+            sys.stderr.write(
+                "[WARNING] Secrets file {} is accessible by others "
+                "(mode {}).  Recommend: chmod 640, chown root:wazuh.\n".format(path, oct(st.st_mode & 0o777))
+            )
+            sys.stderr.flush()
+    except OSError:
+        pass
 
-    for attempt in range(_MAX_RETRIES):
-        headers = build_auth_headers()   # fresh nonce + timestamp each attempt
-        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                raw = resp.read().decode("utf-8")
-                log(3, f"Response: {raw[:500]}")
-                return json.loads(raw)
-        except urllib.error.HTTPError as exc:
-            body_text = exc.read().decode("utf-8", errors="replace")
-            if exc.code in _TRANSIENT_HTTP_CODES and attempt < _MAX_RETRIES - 1:
-                log(1, f"HTTP {exc.code} calling {path} "
-                       f"(attempt {attempt + 1}/{_MAX_RETRIES}), retrying in {2 ** attempt}s…")
-                time.sleep(2 ** attempt)
-                continue
-            log_error(f"HTTP {exc.code} calling {path}: {body_text}")
-            return {}
-        except (urllib.error.URLError, TimeoutError) as exc:
-            if attempt < _MAX_RETRIES - 1:
-                log(1, f"Network error calling {path} "
-                       f"(attempt {attempt + 1}/{_MAX_RETRIES}): {exc}, retrying in {2 ** attempt}s…")
-                time.sleep(2 ** attempt)
-                continue
-            log_error(f"Network error calling {path} after {_MAX_RETRIES} attempts: {exc}")
-            return {}
-        except json.JSONDecodeError as exc:
-            log_error(f"JSON decode error from {path}: {exc}")
-            return {}
-        except Exception as exc:
-            log_error(f"Unexpected error calling {path}: {exc}")
-            return {}
-    return {}
+    found = {}
+    try:
+        with open(path) as f:
+            for lineno, raw in enumerate(f, 1):
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    log(2, "Secrets file line {} skipped (no '=')", lineno)
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and value:
+                    found[key] = value
+                    log(2, "Loaded '{}' from secrets file", key)
+    except PermissionError:
+        sys.stderr.write(
+            "[ERROR] Cannot read secrets file {} - "
+            "check ownership (root:wazuh) and permissions (640)\n".format(path)
+        )
+        sys.stderr.flush()
+    except Exception as exc:
+        log(1, "Error reading secrets file {}: {}", path, exc)
+
+    return found
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# State management
+# 5. Three-tier credential chain
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _state_path() -> str:
-    return config.get("state_file", "/var/ossec/wodles/cortex-xdr/state.json")
+def get_secret(cred_name, env_var, secrets):
+    # Tier 1: systemd credentials directory
+    cred_dir = os.environ.get("CREDENTIALS_DIRECTORY")
+    if cred_dir:
+        cred_path = os.path.join(cred_dir, cred_name)
+        if os.path.isfile(cred_path):
+            try:
+                with open(cred_path) as f:
+                    value = f.read().strip()
+                if value:
+                    log(2, "Credential '{}' from systemd", cred_name)
+                    return value
+            except Exception as exc:
+                log(1, "Could not read systemd credential '{}': {}", cred_name, exc)
+
+    # Tier 2: secrets file
+    if env_var in secrets:
+        log(2, "Credential '{}' from secrets file", cred_name)
+        return secrets[env_var]
+
+    # Tier 3: environment variable
+    value = os.environ.get(env_var)
+    if value:
+        log(2, "Credential '{}' from environment", cred_name)
+        return value
+
+    raise RuntimeError("Credential '{}' not found".format(cred_name))
 
 
-def load_state() -> dict:
-    path = _state_path()
-    if os.path.isfile(path):
-        try:
-            with open(path) as f:
-                state = json.load(f)
-            log(2, f"Loaded state from {path}: {state}")
-            return state
-        except Exception as exc:
-            log(1, f"Could not load state file ({exc}), starting fresh")
-    return {}
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. State loading
+# ─────────────────────────────────────────────────────────────────────────────
+
+def load_state(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
 
 
-def save_state(state: dict):
-    """
-    Write state atomically using a temp file + os.replace.
-    Prevents corruption if the process is killed mid-write — the old
-    state file remains intact until the new one is fully flushed.
-    """
-    path    = _state_path()
-    dir_    = os.path.dirname(path)
-    os.makedirs(dir_, exist_ok=True)
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. State saving (atomic)
+# ─────────────────────────────────────────────────────────────────────────────
 
+def save_state(path, state):
+    dir_name = os.path.dirname(path) or "."
+    os.makedirs(dir_name, exist_ok=True)
     tmp_path = None
     try:
-        with tempfile.NamedTemporaryFile(
-            "w", dir=dir_, delete=False, suffix=".tmp"
-        ) as tmp:
-            json.dump(state, tmp)
+        with tempfile.NamedTemporaryFile("w", dir=dir_name, delete=False, suffix=".tmp") as tmp:
+            json.dump(state, tmp, indent=2)
+            tmp.flush()
+            os.fsync(tmp.fileno())
             tmp_path = tmp.name
-
-        os.replace(tmp_path, path)   # atomic on POSIX
-        log(2, f"Saved state: {state}")
+        os.replace(tmp_path, path)
+        log(2, "Saved state to {}", path)
     except Exception as exc:
-        log_error(f"Failed to save state: {exc}")
-        # Clean up orphaned temp file if os.replace failed
+        log(1, "Failed to save state: {}", exc)
         if tmp_path:
             try:
                 os.unlink(tmp_path)
@@ -244,243 +254,152 @@ def save_state(state: dict):
                 pass
 
 
-def ms_now() -> int:
-    return int(time.time() * 1000)
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. HTTP POST
+# ─────────────────────────────────────────────────────────────────────────────
+
+def http_post(url, headers, body, timeout=30):
+    """POST JSON body to url.  Returns parsed response dict.
+    Raises urllib.error.HTTPError on HTTP errors (after logging body)."""
+    payload = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    log(3, "POST {}", url)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            log(3, "Response: {}", raw[:500])
+            return json.loads(raw)
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode("utf-8", errors="replace")[:200]
+        log(1, "HTTP {} {}: {}", exc.code, url, body_text)
+        raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Event emission
+# 9. HTTP retry wrapper
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _ms_to_iso_emit(ms: int):
-    """Convert a single positive epoch-ms int to ISO 8601 UTC with millisecond precision.
-    Returns None for zero, negative, or non-integer values (treated as unset)."""
-    if not isinstance(ms, int) or ms <= 0:
-        return None
-    dt = datetime.datetime.utcfromtimestamp(ms / 1000.0)
-    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{ms % 1000:03d}Z"
-
-
-def _convert_ts_field(value):
-    """Convert a timestamp field (int or list[int]) from epoch ms to ISO 8601 string(s).
-    Returns None when the result would be empty so emit()'s None-stripping drops the field."""
-    if isinstance(value, list):
-        converted = [_ms_to_iso_emit(ms) for ms in value if isinstance(ms, int) and ms > 0]
-        return converted if converted else None
-    return _ms_to_iso_emit(value)
-
-
-def emit(record: dict, record_type: str):
-    """
-    Emit a single JSON event to stdout (one line per event).
-    All XDR API fields are prefixed with 'xdr_' to avoid collision with
-    Wazuh reserved field names. Null values are dropped to reduce event size.
-    """
-    out = {"integration": INTEGRATION_TAG, "xdr_type": record_type}
-    for k, v in record.items():
-        if v is None:
-            continue   # drop nulls — reduces event size and index noise
-        if k not in _ENVELOPE:
-            if k in _TIMESTAMP_FIELDS:
-                v = _convert_ts_field(v)
-                if v is None:
-                    continue   # invalid/unset timestamp — drop the field
-            out[f"xdr_{k}"] = v
-        else:
-            out[k] = v
-
-    line = json.dumps(out)
-    print(line, flush=True)
-    log(3, f"Emitted ({record_type}): {line[:200]}")
+def http_with_retry(request_fn, max_retries=3, max_wait=60):
+    """Retry on transient HTTP errors (429, 5xx) and network errors."""
+    for attempt in range(max_retries):
+        try:
+            return request_fn()
+        except urllib.error.HTTPError as exc:
+            if exc.code in _TRANSIENT_CODES and attempt < max_retries - 1:
+                if exc.code == 429:
+                    wait = min(int(exc.headers.get("Retry-After", "30")), max_wait)
+                else:
+                    wait = min(2 ** attempt, max_wait)
+                log(1, "HTTP {} (attempt {}/{}), retrying in {}s",
+                    exc.code, attempt + 1, max_retries, wait)
+                time.sleep(wait)
+                continue
+            raise
+        except (urllib.error.URLError, TimeoutError) as exc:
+            if attempt < max_retries - 1:
+                wait = min(2 ** attempt, max_wait)
+                log(1, "Network error (attempt {}/{}): {}, retrying in {}s",
+                    attempt + 1, max_retries, exc, wait)
+                time.sleep(wait)
+                continue
+            raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Time helpers
+# 10. Auth header builder
 # ─────────────────────────────────────────────────────────────────────────────
 
-def ms_to_iso(ms: int) -> str:
-    """Convert epoch milliseconds to a readable ISO 8601 UTC string for logging."""
-    if not ms:
-        return "epoch"
-    return datetime.datetime.utcfromtimestamp(ms / 1000).strftime("%Y-%m-%dT%H:%M:%SZ")
+def xdr_auth_headers(api_key_id, api_key, security_level="advanced"):
+    """Build Cortex XDR auth headers.
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Secret loading
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _load_from_systemd_credentials() -> dict:
+    Standard:  Authorization = SHA-256(api_key)
+    Advanced:  Authorization = SHA-256(api_key + nonce + timestamp_ms)
     """
-    Read secrets injected by systemd via LoadCredential / LoadCredentialEncrypted.
-    Returns a dict with keys 'api_key' and/or 'api_key_id' if found.
-    """
-    creds_dir = os.environ.get("CREDENTIALS_DIRECTORY", "")
-    if not creds_dir or not os.path.isdir(creds_dir):
-        return {}
+    if security_level == "standard":
+        auth = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+        return {
+            "Content-Type": "application/json",
+            "x-xdr-auth-id": str(api_key_id),
+            "Authorization": auth,
+        }
 
-    found = {}
-    for cred_name, config_key in (
-        ("xdr_fqdn",       "fqdn"),
-        ("xdr_api_key",    "api_key"),
-        ("xdr_api_key_id", "api_key_id"),
-    ):
-        cred_path = os.path.join(creds_dir, cred_name)
-        if os.path.isfile(cred_path):
-            try:
-                with open(cred_path) as f:
-                    found[config_key] = f.read().strip()
-                log(2, f"Loaded '{config_key}' from systemd credentials directory")
-            except Exception as exc:
-                log(1, f"Could not read systemd credential '{cred_name}': {exc}")
-
-    return found
-
-
-def _load_from_secrets_file(path: str) -> dict:
-    """
-    Read a simple KEY=value secrets file (no subshell evaluation).
-    Format:
-        XDR_API_KEY=your-secret-key
-        XDR_API_KEY_ID=42
-    Lines starting with '#' and blank lines are ignored.
-    File should be: chmod 640, chown root:wazuh
-    """
-    if not path or not os.path.isfile(path):
-        return {}
-
-    found   = {}
-    mapping = {
-        "XDR_FQDN":       "fqdn",
-        "XDR_API_KEY":    "api_key",
-        "XDR_API_KEY_ID": "api_key_id",
+    # Advanced mode (default)
+    nonce = "".join(secrets_mod.choice(string.ascii_letters + string.digits) for _ in range(64))
+    timestamp_ms = str(int(time.time() * 1000))
+    auth_string = "{}{}{}".format(api_key, nonce, timestamp_ms)
+    auth = hashlib.sha256(auth_string.encode("utf-8")).hexdigest()
+    return {
+        "Content-Type": "application/json",
+        "x-xdr-auth-id": str(api_key_id),
+        "x-xdr-nonce": nonce,
+        "x-xdr-timestamp": timestamp_ms,
+        "Authorization": auth,
     }
 
-    try:
-        st = os.stat(path)
-        if st.st_mode & 0o044:   # group-read or other-read bits set
-            print(
-                f"[WARNING] Secrets file {path} is readable by group/other "
-                f"(mode {oct(st.st_mode & 0o777)}). Recommend: chmod 640.",
-                file=sys.stderr,
-            )
-        with open(path) as f:
-            for lineno, raw in enumerate(f, 1):
-                line = raw.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if "=" not in line:
-                    log(2, f"Secrets file line {lineno} skipped (no '=')")
-                    continue
-                key, _, value = line.partition("=")
-                key   = key.strip()
-                value = value.strip().strip('"').strip("'")
-                if key in mapping:
-                    found[mapping[key]] = value
-                    log(2, f"Loaded '{mapping[key]}' from secrets file")
-    except PermissionError:
-        print(
-            f"[ERROR] Cannot read secrets file {path} – "
-            f"check ownership (root:wazuh) and permissions (640)",
-            file=sys.stderr,
-        )
-    except Exception as exc:
-        log(1, f"Error reading secrets file {path}: {exc}")
 
-    return found
+# ─────────────────────────────────────────────────────────────────────────────
+# XDR API convenience wrapper
+# ─────────────────────────────────────────────────────────────────────────────
 
+def xdr_api_post(path, body, credentials, config):
+    """POST to https://api-{fqdn}/public_api/v1/{path} with auth + retry.
+    Fresh auth headers are generated per attempt (nonce/timestamp rotate)."""
+    fqdn = config["fqdn"]
+    url = "https://api-{}/public_api/v1/{}".format(fqdn, path)
+    log(2, "XDR API POST {}", url)
 
-def load_secrets():
-    """
-    Populate config['api_key'] and config['api_key_id'].
-    Priority (first match wins per key):
-      1. systemd $CREDENTIALS_DIRECTORY  (memory-backed, encrypted at rest)
-      2. Secrets file                     ($XDR_SECRETS_FILE or default path)
-    """
-    from_file    = _load_from_secrets_file(
-                       os.environ.get("XDR_SECRETS_FILE", _DEFAULT_SECRETS_FILE))
-    from_systemd = _load_from_systemd_credentials()
+    def make_request():
+        headers = xdr_auth_headers(
+            credentials["api_key_id"], credentials["api_key"],
+            config.get("security_level", "advanced"))
+        return http_post(url, headers, {"request_data": body})
 
-    # Higher-priority source wins
-    merged = {**from_file, **from_systemd}
-    config["fqdn"]       = merged.get("fqdn", "")
-    config["api_key"]    = merged.get("api_key", "")
-    config["api_key_id"] = merged.get("api_key_id", "")
-
-    # Log winning source for each key (value never logged)
-    sources = [("file", from_file), ("systemd", from_systemd)]
-    for key in ("fqdn", "api_key", "api_key_id"):
-        winner = "not set"
-        for src_name, src_dict in reversed(sources):
-            if src_dict.get(key):
-                winner = src_name
-                break
-        log(2, f"Secret '{key}' sourced from: {winner}")
+    return http_with_retry(make_request)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FQDN sanitisation and validation
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _sanitise_fqdn(raw: str) -> str:
-    """
-    Normalise the FQDN — strip scheme, api- prefix, path, and port.
-    The XDR console "Copy API URL" button copies the full URL; we want only
-    the bare hostname (e.g. myorg.xdr.us.paloaltonetworks.com).
-    """
+def sanitize_fqdn(raw):
+    """Normalise FQDN - strip scheme, api- prefix, path, and port."""
     fqdn = raw.strip()
-    fqdn = re.sub(r'^https?://', '', fqdn)   # strip scheme
-    fqdn = re.sub(r'^api-', '', fqdn)         # strip api- prefix (code adds it)
-    fqdn = fqdn.split('/')[0]                 # strip path
-    fqdn = fqdn.split(':')[0]                 # strip port
+    fqdn = re.sub(r'^https?://', '', fqdn)
+    fqdn = re.sub(r'^api-', '', fqdn)
+    fqdn = fqdn.split('/')[0]
+    fqdn = fqdn.split(':')[0]
     if fqdn != raw.strip():
-        log(1, f"FQDN sanitised: '{raw.strip()}' → '{fqdn}'")
+        log(1, "FQDN sanitised: '{}' -> '{}'", raw.strip(), fqdn)
     return fqdn
 
 
-def _validate_fqdn(fqdn: str):
-    """Pattern-check the sanitised FQDN — no network call."""
+def validate_fqdn(fqdn):
+    """Pattern-check the sanitised FQDN - no network call."""
     if not re.match(
         r'^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?'
         r'(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)+$',
         fqdn,
     ):
-        print(
-            f"\n[ERROR] XDR_FQDN '{fqdn}' does not look like a valid hostname.\n"
-            f"        Set XDR_FQDN to the bare tenant hostname without scheme or 'api-' prefix.\n"
-            f"        Example:  myorg.xdr.us.paloaltonetworks.com\n"
-            f"        NOT:      https://api-myorg.xdr.us.paloaltonetworks.com\n",
-            file=sys.stderr,
+        sys.stderr.write(
+            "\n[ERROR] XDR_FQDN '{}' does not look like a valid hostname.\n"
+            "        Set XDR_FQDN to the bare tenant hostname without scheme or 'api-' prefix.\n"
+            "        Example:  myorg.xdr.us.paloaltonetworks.com\n"
+            "        NOT:      https://api-myorg.xdr.us.paloaltonetworks.com\n\n".format(fqdn)
         )
+        sys.stderr.flush()
         sys.exit(1)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Config validation (called once at startup)
+# Time helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def validate_config():
-    load_secrets()
+def ms_to_iso_log(ms):
+    """Convert epoch-ms to readable ISO 8601 for logging purposes."""
+    if not ms:
+        return "epoch"
+    return datetime.datetime.utcfromtimestamp(ms / 1000).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    raw_fqdn = config.get("fqdn", "")
-    if raw_fqdn:
-        config["fqdn"] = _sanitise_fqdn(raw_fqdn)
-        _validate_fqdn(config["fqdn"])
 
-    required = {
-        "fqdn":       "secrets file (XDR_FQDN) or systemd credential (xdr_fqdn)",
-        "api_key":    "secrets file (XDR_API_KEY) or systemd credential (xdr_api_key)",
-        "api_key_id": "secrets file (XDR_API_KEY_ID) or systemd credential (xdr_api_key_id)",
-    }
-    missing = [hint for key, hint in required.items() if not config.get(key)]
-    if missing:
-        print(f"[ERROR] Missing required config: {'; '.join(missing)}", file=sys.stderr)
-        sys.exit(1)
-
-    if not config.get("api_key_id", "").isdigit():
-        print("[ERROR] api_key_id must be a positive integer. "
-              "Check XDR_API_KEY_ID in your secrets file.", file=sys.stderr)
-        sys.exit(1)
-
-    log(1, f"Config OK – FQDN={config['fqdn']} key_id={config['api_key_id']} "
-           f"level={config.get('security_level','advanced')} "
-           f"api_key={'*' * 8} (len={len(config['api_key'])})")
+def ms_now():
+    return int(time.time() * 1000)

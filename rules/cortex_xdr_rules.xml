@@ -1,29 +1,29 @@
 <!--
-  Wazuh Custom Rules – Cortex XDR Integration
+  Wazuh Custom Rules - Cortex XDR Integration
   =============================================
   File: /var/ossec/etc/rules/cortex_xdr_rules.xml
-  Rule ID range: 100500–100599
+  Rule ID range: 100500-100599
 
   DESIGN NOTES
-  ─────────────────────────────────────────────────────────────────────────────
-  Field naming: all Cortex XDR API fields are prefixed with 'xdr_' to avoid
-  collisions with Wazuh's 13 reserved static field names (action, status,
+  ---------------------------------------------------------------------------
+  All Cortex XDR API fields are nested under the 'xdr' namespace key to
+  avoid collisions with Wazuh's reserved static field names (action, status,
   id, user, srcip, dstip, srcport, dstport, protocol, url, data,
-  extra_data, system_name).
+  extra_data, system_name).  Fields are referenced as xdr.field_name.
 
   Three data streams, three rule families:
     100500        Base rule (all XDR events)
-    100510–100529 Alert rules    (raw detections from endpoint/cloud sensors)
-    100530–100549 Active incident rules  (new + under_investigation)
-    100550–100569 Closed incident rules  (resolved — archival/closure records)
-    100570–100589 MITRE ATT&CK cross-references (populated from incident data)
+    100510-100529 Alert rules    (raw detections from endpoint/cloud sensors)
+    100530-100549 Active incident rules  (new + under_investigation)
+    100550-100569 Closed incident rules  (resolved - archival/closure records)
+    100570-100589 MITRE ATT&CK cross-references (populated from incident data)
     100599        Error rule
 
-  Severity → Wazuh level mapping:
-    low      → 5   (informational)
-    medium   → 10  (significant)
-    high     → 13  (high priority)
-    critical → 15  (maximum)
+  Severity -> Wazuh level mapping:
+    low      -> 5   (informational)
+    medium   -> 10  (significant)
+    high     -> 13  (high priority)
+    critical -> 15  (maximum)
 
   Compliance tags on high/critical rules:
     gdpr_IV_35.7.d, hipaa_164.312.b, nist_800_53_SI.4,
@@ -33,112 +33,109 @@
   Apply:  systemctl restart wazuh-manager
 -->
 
-<group name="cortex-xdr,">
+<group name="cortex_xdr,">
 
-  <!-- ════════════════════════════════════════════════════════════
+  <!-- ================================================================
        BASE RULE
-       Catches all Cortex XDR wodle output. All other rules
+       Catches all Cortex XDR wodle output.  All other rules
        chain from this via if_sid.
-       ════════════════════════════════════════════════════════ -->
+       ================================================================ -->
 
-  <rule id="100500" level="3">
+  <rule id="100500" level="0">
     <decoded_as>json</decoded_as>
-    <field name="integration">cortex-xdr</field>
-    <description>Cortex XDR: event received</description>
+    <field name="integration">cortex_xdr</field>
+    <description>Cortex XDR: event received.</description>
     <options>no_full_log</options>
     <group>cortex_xdr,</group>
   </rule>
 
 
-  <!-- ════════════════════════════════════════════════════════════
-       ALERT RULES  (100510–100529)
+  <!-- ================================================================
+       ALERT RULES  (100510-100529)
        Raw detections from Cortex endpoint and cloud sensors.
        Severity is the sole determinant of rule level.
-       Action, source, and category are available as event fields.
-       ════════════════════════════════════════════════════════ -->
+       ================================================================ -->
 
   <rule id="100510" level="5">
     <if_sid>100500</if_sid>
-    <field name="xdr_type">alert</field>
-    <description>Cortex XDR Alert: $(xdr_name)</description>
+    <field name="xdr.type">alert</field>
+    <description>Cortex XDR Alert: $(xdr.name)</description>
     <group>cortex_xdr,cortex_xdr_alert,</group>
   </rule>
 
   <rule id="100511" level="5">
     <if_sid>100510</if_sid>
-    <field name="xdr_severity">low</field>
-    <description>Cortex XDR Alert [LOW]: $(xdr_name) on $(xdr_host_name)</description>
+    <field name="xdr.severity">low</field>
+    <description>Cortex XDR Alert [LOW]: $(xdr.name) on $(xdr.host_name)</description>
     <group>cortex_xdr,cortex_xdr_alert,low_severity,</group>
   </rule>
 
   <rule id="100512" level="10">
     <if_sid>100510</if_sid>
-    <field name="xdr_severity">medium</field>
-    <description>Cortex XDR Alert [MEDIUM]: $(xdr_name) on $(xdr_host_name)</description>
+    <field name="xdr.severity">medium</field>
+    <description>Cortex XDR Alert [MEDIUM]: $(xdr.name) on $(xdr.host_name)</description>
     <group>cortex_xdr,cortex_xdr_alert,medium_severity,</group>
   </rule>
 
   <rule id="100513" level="13">
     <if_sid>100510</if_sid>
-    <field name="xdr_severity">high</field>
-    <description>Cortex XDR Alert [HIGH]: $(xdr_name) on $(xdr_host_name)</description>
+    <field name="xdr.severity">high</field>
+    <description>Cortex XDR Alert [HIGH]: $(xdr.name) on $(xdr.host_name)</description>
     <group>cortex_xdr,cortex_xdr_alert,high_severity,
            gdpr_IV_35.7.d,hipaa_164.312.b,nist_800_53_SI.4,pci_dss_11.4,tsc_CC7.2,</group>
   </rule>
 
   <rule id="100514" level="15">
     <if_sid>100510</if_sid>
-    <field name="xdr_severity">critical</field>
-    <description>Cortex XDR Alert [CRITICAL]: $(xdr_name) on $(xdr_host_name)</description>
+    <field name="xdr.severity">critical</field>
+    <description>Cortex XDR Alert [CRITICAL]: $(xdr.name) on $(xdr.host_name)</description>
     <group>cortex_xdr,cortex_xdr_alert,critical_severity,
            gdpr_IV_35.7.d,hipaa_164.312.b,nist_800_53_SI.4,pci_dss_11.4,tsc_CC7.2,</group>
   </rule>
 
 
-
-  <!-- ════════════════════════════════════════════════════════════
-       ACTIVE INCIDENT RULES  (100530–100549)
-       new + under_investigation — real-time SOC alerting.
-       Polled every 5 minutes.
-       ════════════════════════════════════════════════════════ -->
+  <!-- ================================================================
+       ACTIVE INCIDENT RULES  (100530-100549)
+       new + under_investigation - real-time SOC alerting.
+       ================================================================ -->
 
   <rule id="100530" level="6">
     <if_sid>100500</if_sid>
-    <field name="xdr_type">incident</field>
-    <description>Cortex XDR Incident: $(xdr_description)</description>
+    <field name="xdr.type">incident</field>
+    <description>Cortex XDR Incident: $(xdr.description)</description>
     <group>cortex_xdr,cortex_xdr_incident,</group>
   </rule>
 
   <rule id="100531" level="6">
     <if_sid>100530</if_sid>
-    <field name="xdr_severity">low</field>
-    <field name="xdr_status">new|under_investigation</field>
-    <description>Cortex XDR Incident [LOW]: $(xdr_description)</description>
+    <field name="xdr.severity">low</field>
+    <field name="xdr.status">new|under_investigation</field>
+    <description>Cortex XDR Incident [LOW]: $(xdr.description)</description>
     <group>cortex_xdr,cortex_xdr_incident,low_severity,</group>
   </rule>
 
   <rule id="100532" level="10">
     <if_sid>100530</if_sid>
-    <field name="xdr_severity">medium</field>
-    <field name="xdr_status">new|under_investigation</field>
-    <description>Cortex XDR Incident [MEDIUM]: $(xdr_description)</description>
+    <field name="xdr.severity">medium</field>
+    <field name="xdr.status">new|under_investigation</field>
+    <description>Cortex XDR Incident [MEDIUM]: $(xdr.description)</description>
     <group>cortex_xdr,cortex_xdr_incident,medium_severity,</group>
   </rule>
 
   <rule id="100533" level="13">
     <if_sid>100530</if_sid>
-    <field name="xdr_severity">high</field>
-    <field name="xdr_status">new|under_investigation</field>
-    <description>Cortex XDR Incident [HIGH]: $(xdr_description)</description>
+    <field name="xdr.severity">high</field>
+    <field name="xdr.status">new|under_investigation</field>
+    <description>Cortex XDR Incident [HIGH]: $(xdr.description)</description>
     <group>cortex_xdr,cortex_xdr_incident,high_severity,
            gdpr_IV_35.7.d,hipaa_164.312.b,nist_800_53_SI.4,pci_dss_11.4,</group>
   </rule>
 
   <rule id="100534" level="15">
     <if_sid>100530</if_sid>
-    <field name="xdr_severity">critical</field>
-    <field name="xdr_status">new|under_investigation</field>
-    <description>Cortex XDR Incident [CRITICAL]: $(xdr_description)</description>
+    <field name="xdr.severity">critical</field>
+    <field name="xdr.status">new|under_investigation</field>
+    <description>Cortex XDR Incident [CRITICAL]: $(xdr.description)</description>
     <group>cortex_xdr,cortex_xdr_incident,critical_severity,
            gdpr_IV_35.7.d,hipaa_164.312.b,nist_800_53_SI.4,pci_dss_11.4,tsc_CC7.2,</group>
   </rule>
@@ -146,91 +143,86 @@
   <!-- Incident actively being worked by an analyst -->
   <rule id="100535" level="6">
     <if_sid>100530</if_sid>
-    <field name="xdr_status">under_investigation</field>
-    <description>Cortex XDR Incident under investigation by $(xdr_assigned_user_pretty_name): $(xdr_description)</description>
+    <field name="xdr.status">under_investigation</field>
+    <description>Cortex XDR Incident under investigation by $(xdr.assigned_user_pretty_name): $(xdr.description)</description>
     <group>cortex_xdr,cortex_xdr_incident,investigation,</group>
   </rule>
 
-  <!-- Large correlated incident — many alerts grouped together -->
+  <!-- Large correlated incident - many alerts grouped together -->
   <rule id="100538" level="11">
     <if_sid>100530</if_sid>
-    <field name="xdr_alert_count">\d{2,}</field>
-    <field name="xdr_status">new|under_investigation</field>
-    <description>Cortex XDR Incident with $(xdr_alert_count) correlated alerts: $(xdr_description)</description>
+    <field name="xdr.alert_count">\d{2,}</field>
+    <field name="xdr.status">new|under_investigation</field>
+    <description>Cortex XDR Incident with $(xdr.alert_count) correlated alerts: $(xdr.description)</description>
     <group>cortex_xdr,cortex_xdr_incident,correlated,</group>
   </rule>
 
 
-  <!-- ════════════════════════════════════════════════════════════
-       CLOSED INCIDENT RULES  (100550–100569)
+  <!-- ================================================================
+       CLOSED INCIDENT RULES  (100550-100569)
        resolved_true_positive + resolved_false_positive
        Archival records and closure visibility for SOC.
-       Polled every 30 minutes. Level 3 — informational only.
-       ════════════════════════════════════════════════════════ -->
+       ================================================================ -->
 
   <rule id="100550" level="3">
     <if_sid>100530</if_sid>
-    <field name="xdr_status">resolved_true_positive</field>
-    <description>Cortex XDR Incident closed as TRUE POSITIVE: $(xdr_description)</description>
+    <field name="xdr.status">resolved_true_positive</field>
+    <description>Cortex XDR Incident closed as TRUE POSITIVE: $(xdr.description)</description>
     <group>cortex_xdr,cortex_xdr_incident,closed,true_positive,</group>
   </rule>
 
   <rule id="100551" level="3">
     <if_sid>100530</if_sid>
-    <field name="xdr_status">resolved_false_positive</field>
-    <description>Cortex XDR Incident closed as FALSE POSITIVE: $(xdr_description)</description>
+    <field name="xdr.status">resolved_false_positive</field>
+    <description>Cortex XDR Incident closed as FALSE POSITIVE: $(xdr.description)</description>
     <group>cortex_xdr,cortex_xdr_incident,closed,false_positive,</group>
   </rule>
 
-  <!-- True positive closed with analyst comment — highest signal for threat hunting -->
+  <!-- True positive closed with analyst comment - highest signal for threat hunting -->
   <rule id="100552" level="5">
     <if_sid>100550</if_sid>
-    <field name="xdr_resolve_comment">\.+</field>
-    <description>Cortex XDR TRUE POSITIVE closed with analyst note: $(xdr_resolve_comment)</description>
+    <field name="xdr.resolve_comment">\.+</field>
+    <description>Cortex XDR TRUE POSITIVE closed with analyst note: $(xdr.resolve_comment)</description>
     <group>cortex_xdr,cortex_xdr_incident,closed,true_positive,analyst_note,</group>
   </rule>
 
   <!-- High/critical true positives are significant even when closed -->
   <rule id="100553" level="8">
     <if_sid>100550</if_sid>
-    <field name="xdr_severity">high</field>
-    <description>Cortex XDR HIGH severity incident closed as true positive: $(xdr_description)</description>
+    <field name="xdr.severity">high</field>
+    <description>Cortex XDR HIGH severity incident closed as true positive: $(xdr.description)</description>
     <group>cortex_xdr,cortex_xdr_incident,closed,true_positive,high_severity,
            gdpr_IV_35.7.d,hipaa_164.312.b,nist_800_53_IR.4,pci_dss_12.10,</group>
   </rule>
 
   <rule id="100554" level="10">
     <if_sid>100550</if_sid>
-    <field name="xdr_severity">critical</field>
-    <description>Cortex XDR CRITICAL severity incident closed as true positive: $(xdr_description)</description>
+    <field name="xdr.severity">critical</field>
+    <description>Cortex XDR CRITICAL severity incident closed as true positive: $(xdr.description)</description>
     <group>cortex_xdr,cortex_xdr_incident,closed,true_positive,critical_severity,
            gdpr_IV_35.7.d,hipaa_164.312.b,nist_800_53_IR.4,pci_dss_12.10,tsc_CC7.2,</group>
   </rule>
 
 
-  <!-- ════════════════════════════════════════════════════════════
-       MITRE ATT&CK RULES  (100570–100589)
+  <!-- ================================================================
+       MITRE ATT&CK RULES  (100570-100589)
        Cross-reference incidents with MITRE tactics.
        These fire IN ADDITION TO the severity rules above,
        populating Wazuh's native MITRE ATT&CK dashboard.
-       ════════════════════════════════════════════════════════ -->
+       ================================================================ -->
 
   <rule id="100570" level="6">
     <if_sid>100530</if_sid>
-    <field name="xdr_mitre_tactics_ids_and_names">\.+</field>
-    <description>Cortex XDR Incident with MITRE ATT&amp;CK mapping: $(xdr_description)</description>
-    <!-- No <mitre><id> here — the field contains a full tactic label string
-         (e.g. "Persistence - TA0003"), not a bare ID. The specific tactic rules
-         below (100571–100578) each match on the label text and hardcode the
-         correct MITRE ID, which is what Wazuh's MITRE module indexes. -->
+    <field name="xdr.mitre_tactics_ids_and_names">\.+</field>
+    <description>Cortex XDR Incident with MITRE ATT&amp;CK mapping: $(xdr.description)</description>
     <group>cortex_xdr,cortex_xdr_incident,mitre_mapped,</group>
   </rule>
 
-  <!-- Persistence — attackers establishing long-term access -->
+  <!-- Persistence - attackers establishing long-term access -->
   <rule id="100571" level="10">
     <if_sid>100570</if_sid>
-    <field name="xdr_mitre_tactics_ids_and_names">Persistence</field>
-    <description>Cortex XDR MITRE Persistence tactic detected: $(xdr_description)</description>
+    <field name="xdr.mitre_tactics_ids_and_names">Persistence</field>
+    <description>Cortex XDR MITRE Persistence tactic detected: $(xdr.description)</description>
     <group>cortex_xdr,cortex_xdr_incident,mitre_mapped,mitre_persistence,
            gdpr_IV_35.7.d,nist_800_53_SI.4,</group>
   </rule>
@@ -238,8 +230,8 @@
   <!-- Privilege Escalation -->
   <rule id="100572" level="11">
     <if_sid>100570</if_sid>
-    <field name="xdr_mitre_tactics_ids_and_names">Privilege Escalation</field>
-    <description>Cortex XDR MITRE Privilege Escalation detected: $(xdr_description)</description>
+    <field name="xdr.mitre_tactics_ids_and_names">Privilege Escalation</field>
+    <description>Cortex XDR MITRE Privilege Escalation detected: $(xdr.description)</description>
     <group>cortex_xdr,cortex_xdr_incident,mitre_mapped,mitre_privilege_escalation,
            gdpr_IV_35.7.d,hipaa_164.312.a,nist_800_53_AC.6,pci_dss_7.1,</group>
   </rule>
@@ -247,8 +239,8 @@
   <!-- Defense Evasion -->
   <rule id="100573" level="11">
     <if_sid>100570</if_sid>
-    <field name="xdr_mitre_tactics_ids_and_names">Defense Evasion</field>
-    <description>Cortex XDR MITRE Defense Evasion detected: $(xdr_description)</description>
+    <field name="xdr.mitre_tactics_ids_and_names">Defense Evasion</field>
+    <description>Cortex XDR MITRE Defense Evasion detected: $(xdr.description)</description>
     <group>cortex_xdr,cortex_xdr_incident,mitre_mapped,mitre_defense_evasion,
            nist_800_53_SI.4,pci_dss_11.4,</group>
   </rule>
@@ -256,8 +248,8 @@
   <!-- Credential Access -->
   <rule id="100574" level="12">
     <if_sid>100570</if_sid>
-    <field name="xdr_mitre_tactics_ids_and_names">Credential Access</field>
-    <description>Cortex XDR MITRE Credential Access detected: $(xdr_description)</description>
+    <field name="xdr.mitre_tactics_ids_and_names">Credential Access</field>
+    <description>Cortex XDR MITRE Credential Access detected: $(xdr.description)</description>
     <group>cortex_xdr,cortex_xdr_incident,mitre_mapped,mitre_credential_access,
            gdpr_IV_35.7.d,hipaa_164.312.a,nist_800_53_IA.5,pci_dss_8.3,</group>
   </rule>
@@ -265,8 +257,8 @@
   <!-- Lateral Movement -->
   <rule id="100575" level="12">
     <if_sid>100570</if_sid>
-    <field name="xdr_mitre_tactics_ids_and_names">Lateral Movement</field>
-    <description>Cortex XDR MITRE Lateral Movement detected: $(xdr_description)</description>
+    <field name="xdr.mitre_tactics_ids_and_names">Lateral Movement</field>
+    <description>Cortex XDR MITRE Lateral Movement detected: $(xdr.description)</description>
     <group>cortex_xdr,cortex_xdr_incident,mitre_mapped,mitre_lateral_movement,
            gdpr_IV_35.7.d,nist_800_53_SI.4,pci_dss_11.4,</group>
   </rule>
@@ -274,8 +266,8 @@
   <!-- Exfiltration -->
   <rule id="100576" level="13">
     <if_sid>100570</if_sid>
-    <field name="xdr_mitre_tactics_ids_and_names">Exfiltration</field>
-    <description>Cortex XDR MITRE Exfiltration detected: $(xdr_description)</description>
+    <field name="xdr.mitre_tactics_ids_and_names">Exfiltration</field>
+    <description>Cortex XDR MITRE Exfiltration detected: $(xdr.description)</description>
     <group>cortex_xdr,cortex_xdr_incident,mitre_mapped,mitre_exfiltration,
            gdpr_IV_35.7.d,hipaa_164.312.b,nist_800_53_SI.4,pci_dss_12.3,</group>
   </rule>
@@ -283,8 +275,8 @@
   <!-- Command and Control -->
   <rule id="100577" level="13">
     <if_sid>100570</if_sid>
-    <field name="xdr_mitre_tactics_ids_and_names">Command and Control</field>
-    <description>Cortex XDR MITRE Command and Control detected: $(xdr_description)</description>
+    <field name="xdr.mitre_tactics_ids_and_names">Command and Control</field>
+    <description>Cortex XDR MITRE Command and Control detected: $(xdr.description)</description>
     <group>cortex_xdr,cortex_xdr_incident,mitre_mapped,mitre_c2,
            gdpr_IV_35.7.d,nist_800_53_SI.4,pci_dss_11.4,</group>
   </rule>
@@ -292,22 +284,22 @@
   <!-- Impact -->
   <rule id="100578" level="14">
     <if_sid>100570</if_sid>
-    <field name="xdr_mitre_tactics_ids_and_names">Impact</field>
-    <description>Cortex XDR MITRE Impact detected: $(xdr_description)</description>
+    <field name="xdr.mitre_tactics_ids_and_names">Impact</field>
+    <description>Cortex XDR MITRE Impact detected: $(xdr.description)</description>
     <group>cortex_xdr,cortex_xdr_incident,mitre_mapped,mitre_impact,
            gdpr_IV_35.7.d,hipaa_164.312.b,nist_800_53_CP.2,pci_dss_12.3,tsc_CC7.2,</group>
   </rule>
 
 
-  <!-- ════════════════════════════════════════════════════════════
+  <!-- ================================================================
        ERROR RULE
-       ════════════════════════════════════════════════════════ -->
+       ================================================================ -->
 
-  <rule id="100599" level="5">
+  <rule id="100599" level="8">
     <if_sid>100500</if_sid>
-    <field name="xdr_type">error</field>
-    <description>Cortex XDR wodle error: $(xdr_error)</description>
-    <group>cortex_xdr,cortex_xdr_error,</group>
+    <field name="xdr.type">error</field>
+    <description>Cortex XDR wodle error ($(xdr.error_source)): $(xdr.error_message)</description>
+    <group>cortex_xdr,cortex_xdr_error,integration_error,</group>
   </rule>
 
 </group>
