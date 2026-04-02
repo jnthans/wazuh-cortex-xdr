@@ -6,9 +6,9 @@ Wazuh wodle that ingests **alerts** and **incidents** from Palo Alto Networks Co
 
 ## Dashboard
 
-![Cortex XDR Alerts dashboard](artifacts/images/wazuh_xdr_alerts_pv.png)
+![Cortex XDR dashboard](artifacts/images/wazuh_cortex_xdr_dash_pv.png)
 
-*Custom Cortex XDR Alerts dashboard showing alert counts by severity, event type word cloud, category breakdown, top endpoints, and MITRE tactic mappings.*
+*Custom Cortex XDR dashboard showing alert counts by severity, event type word cloud, category breakdown, top endpoints, MITRE tactic mappings, and other metrics.*
 
 ![Wazuh Threat Hunting dashboard with Cortex XDR incidents](artifacts/images/wazuh_xdr_th_pv.png)
 
@@ -63,10 +63,12 @@ wazuh-cortex-xdr/
 │   │   ├── configuration.md                    ← All env vars, CLI flags, multi-tenant
 │   │   ├── rules-reference.md                  ← Rule families, severity mapping, MITRE, compliance
 │   │   └── troubleshooting.md                  ← Test commands, common errors, reset / backfill
-│   └── images/
-│       └── wazuh_xdr_incidents_pv.png          ← Dashboard screenshot
+│   ├── images/
+│   │   ├── wazuh_cortex_xdr_dash_pv.png        ← Cortex XDR dashboard screenshot
+│   │   └── wazuh_xdr_th_pv.png                 ← Wazuh Threat Hunting dashboard screenshot
+│   └── objects/
+│       └── Cortex XDR.ndjson                    ← OpenSearch Dashboards saved object (importable)
 ├── .gitignore
-├── CHANGELOG.md
 └── README.md
 ```
 
